@@ -1,11 +1,11 @@
 ## Hideout Shootout
 
-This is a client-side mod for SPT 4.0+ that enables use of your weapon in the Hideout outside of the shooting range.
+This is a client-side mod for SPT 4.1 that enables use of your weapon in the Hideout outside of the shooting range.
 
 ---
 
 ### Compatibility
-- Target: SPT 4.0+
+- Target: SPT 4.1
 
 ### Installation
 - Place the folder located in the release zip into your SPT root folder.
@@ -18,4 +18,4 @@ This is a client-side mod for SPT 4.0+ that enables use of your weapon in the Hi
 
 ---
 
-###### This project is distributed under the MIT License — see `LICENSE` for details.
+###### This project is distributed under the MIT License ï¿½ see `LICENSE` for details.

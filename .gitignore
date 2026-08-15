@@ -1,4 +1,25 @@
+# Build output
 bin/
 obj/
+
+# Local reverse-engineering helpers.
+tools/
+docs/
+
+# Release artifacts
+*.zip
+*.7z
+*.rar
+
+# IDE / editor
 .vs/
-.git/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

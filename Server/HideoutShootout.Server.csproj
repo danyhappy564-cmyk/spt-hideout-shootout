@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+	<TargetFramework>net10.0</TargetFramework>
+	<Nullable>enable</Nullable>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<OutputType>Library</OutputType>
+	<AssemblyName>HideoutShootout.Server</AssemblyName>
+	<RootNamespace>HideoutShootout.Server</RootNamespace>
+	<AssemblyVersion>1.1.0</AssemblyVersion>
+	<FileVersion>$(AssemblyVersion)</FileVersion>
+	<Version>$(AssemblyVersion)</Version>
+	<SptServerDllDir Condition="'$(SptServerDllDir)' == ''">C:\EFTDev\SPT_Runtime</SptServerDllDir>
+	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptServerDllDir)\user\mods\hideoutshootout-server</ServerModDeployDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<Reference Include="0Harmony">
+	  <HintPath>$(SptServerDllDir)\0Harmony.dll</HintPath>
+	</Reference>
+	<Reference Include="SemanticVersioning">
+	  <HintPath>$(SptServerDllDir)\SemanticVersioning.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.Common">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.Common.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.DI">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.DI.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.Reflection">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.Reflection.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.Server.Assets">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Assets.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.Server.Core">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Core.dll</HintPath>
+	</Reference>
+	<Reference Include="SPTarkov.Server.Web">
+	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Web.dll</HintPath>
+	</Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+	<Folder Include="wwwroot\" />
+  </ItemGroup>
+
+	<Target Name="CopyToSptServerMods" AfterTargets="Build">
+	<ItemGroup>
+	  <OutputDll Include="$(TargetPath)" />
+	  <OutputPdb Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+	  <Resources Include="$(ProjectDir)Resources\**\*.*" Condition="Exists('$(ProjectDir)Resources')" />
+	  <WebAssets Include="$(ProjectDir)wwwroot\**\*.*" Condition="Exists('$(ProjectDir)wwwroot')" />
+	</ItemGroup>
+
+	<MakeDir Directories="$(ServerModDeployDir)" />
+	<Copy SourceFiles="@(OutputDll)" DestinationFolder="$(ServerModDeployDir)" />
+	<Copy SourceFiles="@(OutputPdb)" DestinationFolder="$(ServerModDeployDir)" SkipUnchangedFiles="true" />
+	<Copy SourceFiles="@(Resources)" DestinationFolder="$(ServerModDeployDir)\Resources\%(RecursiveDir)" SkipUnchangedFiles="true" />
+	<Copy SourceFiles="@(WebAssets)" DestinationFolder="$(ServerModDeployDir)\wwwroot\%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
