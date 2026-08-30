@@ -99,6 +99,8 @@ namespace HideoutShootout
 
         private static async Task SpawnAssaultBotNearPlayer(HideoutPlayerOwner owner)
         {
+            Patch_HollywoodFX_ForceEffectsInHideout.TryWireShotDelegateOnce();
+
             AbstractGame game = Singleton<AbstractGame>.Instance;
             if (game == null)
             {
@@ -2847,6 +2849,64 @@ namespace HideoutShootout
                 .GetMethods(BindingFlags.Public | BindingFlags.Static)
                 .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == valueType);
             createMethod?.Invoke(null, new[] { instance });
+        }
+
+        private static bool _shotDelegateWireAttempted;
+
+        /// <summary>
+        /// Confirmed via the gore diagnostics patch: HollywoodFX's <c>PlayerDamageRegistry</c> never
+        /// gets a single entry for the hideout-spawned bot, on every kill, every time - tracing why
+        /// led to <c>HollywoodFX.Patches.ShotDelegateWrapperPatch</c>, which is what actually wires
+        /// up damage registration. It works by swapping <c>BallisticsCalculator</c>'s private shot
+        /// delegate field for its own wrapper - but it only does that from a <c>Postfix</c> on
+        /// <c>GameWorld.OnGameStarted()</c>, which the Hideout apparently never calls at all (unlike
+        /// <c>GameWorld.Awake()</c>, which does fire there, and which the effects-init fix above
+        /// already relies on). No amount of forcing <c>IsHideout</c> false helps here, since the
+        /// method that reads it is simply never invoked in the Hideout to begin with.
+        /// <para>
+        /// Worked around by calling HollywoodFX's own <c>ShotDelegateWrapperPatch.Postfix</c>
+        /// directly (it's public and static) once the Hideout's <see cref="GameWorld"/> is actually
+        /// up - by which point <c>BallisticsCalculator</c> is guaranteed to already exist, unlike at
+        /// <c>GameWorld.Awake()</c> time. Guarded by <c>OriginalShotDelegate</c> already being set so
+        /// this never re-wraps the delegate a second time.
+        /// </para>
+        /// </summary>
+        internal static void TryWireShotDelegateOnce()
+        {
+            if (_shotDelegateWireAttempted)
+            {
+                return;
+            }
+            _shotDelegateWireAttempted = true;
+
+            try
+            {
+                Type shotWrapperType = AccessTools.TypeByName("HollywoodFX.Patches.ShotDelegateWrapperPatch");
+                if (shotWrapperType == null)
+                {
+                    return;
+                }
+
+                FieldInfo originalDelegateField = AccessTools.Field(shotWrapperType, "OriginalShotDelegate");
+                if (originalDelegateField != null && originalDelegateField.GetValue(null) != null)
+                {
+                    LogSpawnDiagnostic("HollywoodFX shot-delegate wrapper already wired; skipping.");
+                    return;
+                }
+
+                MethodInfo postfix = AccessTools.Method(shotWrapperType, "Postfix");
+                if (postfix == null || !Singleton<GameWorld>.Instantiated)
+                {
+                    return;
+                }
+
+                postfix.Invoke(null, new object[] { Singleton<GameWorld>.Instance });
+                Plugin.LogSource.LogInfo("Manually invoked HollywoodFX's ShotDelegateWrapperPatch.Postfix - the Hideout never calls GameWorld.OnGameStarted(), which is what normally triggers this wiring.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"Failed to wire HollywoodFX's shot-delegate wrapper: {ex.Message}");
+            }
         }
     }
 
