@@ -85,18 +85,31 @@ class Program
         }
         Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
-        // Highest-priority unknowns first, so a crash partway through still saves the most
-        // valuable data. Already-confirmed types (BotCreationDataClass, BotSpawner, IBotCreator,
-        // MovementContext) are last since we already have those from the previous run.
+        // Round 2 targets, informed by round 1's results:
+        // - IBotCreator's only implementor is BotCreatorClass (not BotCreatorClient) - need its
+        //   full shape to replace `new BotCreatorClient(ibotGame, profileCreator, playerFactory)`.
+        // - LocalPlayer.Create takes an `ISession session` param, not IEftSession - almost
+        //   certainly the 4.0.13 name for what this mod calls IEftSession.
+        // - IGetProfileData's implementors are BotProfileDataClass/GClass688/GClass689/
+        //   ProfileDataClass - one of these replaces the missing GetProfileDataParams.
+        // - PoolManagerClass has no LoadBundlesAndCreatePools; it has RegisterPools(PoolsCategory,
+        //   Transform, ObjectsFactoryDataClass, AssemblyType) instead - need ObjectsFactoryDataClass's
+        //   shape to know what that config object requires.
+        // - LocalPlayer.Create also takes IStatisticsManager/IViewFilter - need their implementors.
+        // Everything from round 1 that still came back with zero matches even after scanning
+        // every Managed\*.dll is kept at the end - if it's empty again, those genuinely don't
+        // exist in this client build.
         string[] targets =
         {
-            "GClass682", "GClass406",
-            "IEftSession", "BotProfileClient", "BotCreatorClient", "SpawnWave",
+            "BotCreatorClass", "ISession",
+            "BotProfileDataClass", "ProfileDataClass", "GClass688", "GClass689",
+            "ObjectsFactoryDataClass", "GClass407",
+            "IStatisticsManager", "IViewFilter",
+            "IEftSession", "BotProfileClient", "BotCreatorClient", "SpawnWave", "ObjectsFactory",
             "AppEnvironment", "GlobalEventDispatcher", "InGameBundles", "JobYieldPriority",
             "DumbStatisticsManager", "OfflinePlayerCulling", "PositionNote",
-            "ThirdPersonCustomizationFilter", "DebugBotProfilesStructContainer",
-            "GetProfileDataParams", "IGetProfileData",
-            "ObjectsFactory", "PoolManagerClass", "LocalPlayer", "Profile",
+            "ThirdPersonCustomizationFilter", "DebugBotProfilesStructContainer", "GetProfileDataParams",
+            "GClass682", "GClass406", "IGetProfileData", "PoolManagerClass", "LocalPlayer", "Profile",
             "BotCreationData", "BotCreationDataClass", "BotSpawner", "IBotCreator", "MovementContext",
         };
 
@@ -189,23 +202,47 @@ class Program
         const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
             | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
-        TryEach(w, "ctor", () => t.GetConstructors(flags).Select(c => FormatMethod(c)));
-        TryEach(w, "method", () => t.GetMethods(flags).Where(m => !m.IsSpecialName).Select(m => FormatMethod(m)));
-        TryEach(w, "prop", () => t.GetProperties(flags).Select(p => p.PropertyType + " " + p.Name));
-        TryEach(w, "field", () => t.GetFields(flags).Select(f => f.FieldType + " " + f.Name));
-        TryEach(w, "nested", () => t.GetNestedTypes(flags).Select(nt => nt.FullName + (nt.IsEnum ? " [enum: " + string.Join(",", Enum.GetNames(nt)) + "]" : "")));
+        // A parameter/field/return type that itself fails to load (a delegate class that isn't
+        // sealed, a cross-assembly type that didn't resolve, etc.) throws the instant .ToString()
+        // touches it. Iterate the raw MemberInfo[] with per-member try/catch instead of a lazy
+        // Select() pipeline, so one bad member logs an error line and formatting continues -
+        // that's what silently swallowed a PoolManagerClass method and a MovementContext field
+        // last run (both hidden behind an unloadable GDelegateNN parameter/field type).
+        SafeDump(w, "ctor", SafeGetMembers(() => t.GetConstructors(flags), t, "ctor"), FormatMethod);
+        SafeDump(w, "method", SafeGetMembers(() => t.GetMethods(flags).Where(m => !m.IsSpecialName).ToArray(), t, "method"), FormatMethod);
+        SafeDump(w, "prop", SafeGetMembers(() => t.GetProperties(flags), t, "prop"), p => p.PropertyType + " " + p.Name);
+        SafeDump(w, "field", SafeGetMembers(() => t.GetFields(flags), t, "field"), f => f.FieldType + " " + f.Name);
+        SafeDump(w, "nested", SafeGetMembers(() => t.GetNestedTypes(flags), t, "nested"),
+            nt => nt.FullName + (nt.IsEnum ? " [enum: " + string.Join(",", Enum.GetNames(nt)) + "]" : ""));
     }
 
-    static void TryEach(StreamWriter w, string label, Func<IEnumerable<string>> getLines)
+    static TMember[] SafeGetMembers<TMember>(Func<TMember[]> get, Type owner, string label)
     {
         try
         {
-            foreach (var line in getLines())
-                w.WriteLine("  " + label + ": " + line);
+            return get();
         }
         catch (Exception ex)
         {
-            w.WriteLine("  " + label + ": <error: " + ex.Message + ">");
+            Console.WriteLine($"  (could not enumerate {label} on {owner.FullName}: {ex.Message})");
+            return Array.Empty<TMember>();
+        }
+    }
+
+    static void SafeDump<TMember>(StreamWriter w, string label, TMember[] members, Func<TMember, string> format) where TMember : MemberInfo
+    {
+        foreach (var m in members)
+        {
+            try
+            {
+                w.WriteLine("  " + label + ": " + format(m));
+            }
+            catch (Exception ex)
+            {
+                string name = "?";
+                try { name = m.Name; } catch { }
+                w.WriteLine("  " + label + ": " + name + " <error formatting signature: " + ex.Message + ">");
+            }
         }
     }
 

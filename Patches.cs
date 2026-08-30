@@ -1222,6 +1222,13 @@ namespace HideoutShootout
             return EnsureRealBotCreator(ibotGame);
         }
 
+        // PORTING NOTE (SPT 4.0.13, still open): this whole method's real-IBotCreator pipeline is
+        // built against SPT 4.1's BotProfileClient/BotCreatorClient/IEftSession/SpawnWave, none of
+        // which exist under those names anywhere in the 4.0.13 client (confirmed by scanning
+        // every Managed\*.dll). IBotCreator's only implementor on 4.0.13 is BotCreatorClass, and
+        // LocalPlayer.Create takes ISession (not IEftSession) - likely the replacements, but their
+        // constructor/full shape isn't confirmed yet. Do not guess-rename the identifiers below
+        // until that's confirmed; this method will not compile as-is on 4.0.13.
         private static IBotCreator EnsureRealBotCreator(IBotGame ibotGame)
         {
             if (_realBotCreator != null)
@@ -2184,7 +2191,9 @@ namespace HideoutShootout
     {
         protected override MethodBase GetTargetMethod()
         {
-            MethodBase target = AccessTools.GetDeclaredMethods(typeof(BotCreatorClient))
+            // PORTING NOTE (SPT 4.0.13): IBotCreator's only implementor on this client is
+            // BotCreatorClass, not BotCreatorClient (this mod's SPT 4.1 target).
+            MethodBase target = AccessTools.GetDeclaredMethods(typeof(BotCreatorClass))
                 .FirstOrDefault(m =>
                 {
                     ParameterInfo[] p = m.GetParameters();
