@@ -36,17 +36,21 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
-  <!-- The server mod is a separate project nested inside this project's folder, so the
-       SDK's default globs would otherwise sweep in everything under Server\, including
-       its build output. That matters beyond source files: items under Server\bin become
-       MSBuild candidate assembly files and hijack reference resolution - 0Harmony was
-       resolving to the server's .NET copy instead of BepInEx\core\0Harmony.dll.
-       Server\HideoutShootout.Server.csproj is in the solution, so it needs no None item. -->
+  <!-- The server mod (and the throwaway DumpTool below) are separate projects nested inside
+       this project's folder, so the SDK's default globs would otherwise sweep in everything
+       under Server\ and DumpTool\, including their build output. That matters beyond source
+       files: items under bin\ become MSBuild candidate assembly files and hijack reference
+       resolution - 0Harmony was resolving to the server's .NET copy instead of
+       BepInEx\core\0Harmony.dll. Both are in the solution, so neither needs a None item. -->
   <ItemGroup>
     <Compile Remove="Server\**" />
     <None Remove="Server\**" />
     <Content Remove="Server\**" />
     <EmbeddedResource Remove="Server\**" />
+    <Compile Remove="DumpTool\**" />
+    <None Remove="DumpTool\**" />
+    <Content Remove="DumpTool\**" />
+    <EmbeddedResource Remove="DumpTool\**" />
   </ItemGroup>
 
   <ItemGroup>
