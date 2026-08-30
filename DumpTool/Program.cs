@@ -15,11 +15,15 @@ using System.Text;
 class Program
 {
     static string ManagedDir;
+    static string PluginsDir;
+    static string BepInExCoreDir;
 
     static void Main(string[] args)
     {
         string sptRoot = args.Length > 0 ? args[0] : @"E:\SPT 4.0.10";
         ManagedDir = Path.Combine(sptRoot, "EscapeFromTarkov_Data", "Managed");
+        PluginsDir = Path.Combine(sptRoot, "BepInEx", "plugins");
+        BepInExCoreDir = Path.Combine(sptRoot, "BepInEx", "core");
 
         if (!Directory.Exists(ManagedDir))
         {
@@ -32,7 +36,23 @@ class Program
         {
             string name = new AssemblyName(e.Name).Name;
             string path = Path.Combine(ManagedDir, name + ".dll");
-            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+            if (File.Exists(path)) return Assembly.LoadFrom(path);
+
+            // Round 16: dumping third-party BepInEx plugin DLLs (e.g. HollywoodFX) as well as the
+            // game's own assemblies - those reference HarmonyLib/BepInEx itself (in BepInEx\core,
+            // not Managed) and each other (in BepInEx\plugins, often nested a folder deep), so both
+            // need to be on the resolve path too.
+            if (Directory.Exists(BepInExCoreDir))
+            {
+                path = Path.Combine(BepInExCoreDir, name + ".dll");
+                if (File.Exists(path)) return Assembly.LoadFrom(path);
+            }
+            if (Directory.Exists(PluginsDir))
+            {
+                string match = Directory.GetFiles(PluginsDir, name + ".dll", SearchOption.AllDirectories).FirstOrDefault();
+                if (match != null) return Assembly.LoadFrom(match);
+            }
+            return null;
         };
 
         // The 10 symbols that came back with zero matches when only Assembly-CSharp.dll was
@@ -73,6 +93,38 @@ class Program
             catch (Exception ex)
             {
                 loadErrors.Add($"{fileName}: {ex.Message}");
+            }
+        }
+
+        // Round 16: HollywoodFX (a third-party BepInEx plugin, not part of the game itself)
+        // explicitly logs "Skipping EffectsAwakePrefixPatch for the Hideout" - confirmed it detects
+        // the hideout and deliberately no-ops its own effects setup there. Its DLL lives under
+        // BepInEx\plugins, not EscapeFromTarkov_Data\Managed, so it was never in typesArr at all
+        // until now. Scanning every plugin DLL (recursively - most ship in their own subfolder)
+        // the same way, into the same type pool, so the existing dump/search targets below can
+        // reach it without a separate code path.
+        if (Directory.Exists(PluginsDir))
+        {
+            foreach (string dllPath in Directory.GetFiles(PluginsDir, "*.dll", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var asm = Assembly.LoadFrom(dllPath);
+                    Type[] types;
+                    try
+                    {
+                        types = asm.GetTypes();
+                    }
+                    catch (ReflectionTypeLoadException ex)
+                    {
+                        types = ex.Types.Where(t => t != null).ToArray();
+                    }
+                    allTypes.AddRange(types);
+                }
+                catch (Exception ex)
+                {
+                    loadErrors.Add($"{Path.GetFileName(dllPath)}: {ex.Message}");
+                }
             }
         }
 
@@ -176,6 +228,17 @@ class Program
             // actually checks, and whether there's a real preload path for hands specifically, or a
             // Harmony patch target if not.
             "PlayerBody", "GClass2197",
+
+            // Round 16: HollywoodFX (BepInEx\plugins, now scanned into the same type pool) confirmed
+            // logging "Game world hideout flag: True" / "Skipping EffectsAwakePrefixPatch for the
+            // Hideout" etc. - it deliberately detects the hideout and no-ops its own blood/impact FX
+            // setup there, which is why the spawned bots take hits with no FX. These are the exact
+            // patch classes named in that log output; dumping them (plus a broader field/method
+            // search below) to find where and how that hideout check actually happens, so it's clear
+            // whether it's safe to work around and what to target.
+            "GameWorldAwakePrefixPatch", "GameWorldStartedPostfixPatch", "GameWorldDisposePostfixPatch",
+            "EffectsAwakePrefixPatch", "EffectsAwakePostfixPatch", "EffectsWipeDefaultExplosionSystemsPatch",
+            "EffectsEmitPatch", "ShotDelegateWrapperPatch",
         };
 
         // InGameBundles.PLAYER_BUNDLE_NAME etc. are static fields, not methods - a field-name
@@ -184,7 +247,7 @@ class Program
         // renamed to something that doesn't contain the whole original name.
         using (var fsw = new StreamWriter("field_search.txt", false, Encoding.UTF8))
         {
-            string[] fieldNameNeedles = { "BUNDLE_NAME", "ANIMATOR_CONTROLLER", "ROOTMOTION" };
+            string[] fieldNameNeedles = { "BUNDLE_NAME", "ANIMATOR_CONTROLLER", "ROOTMOTION", "Hideout", "IsHideout" };
             foreach (var needle in fieldNameNeedles)
             {
                 fsw.WriteLine("==================================================");
@@ -231,12 +294,24 @@ class Program
                         fsw.WriteLine("  " + t.FullName + " (base: " + SafeTypeName(t.BaseType) + ")");
                 fsw.WriteLine();
             }
+
+            // Round 16: full list of every type HollywoodFX's own DLL(s) define, now that plugin
+            // DLLs are scanned too - gives a map of its patch/config classes beyond the handful named
+            // in the runtime log, in case the hideout flag lives somewhere else entirely (e.g. a
+            // central "Plugin" or "Config" class the individual patches just read from).
+            fsw.WriteLine("==================================================");
+            fsw.WriteLine("TYPE NAME CONTAINS: Hollywood (namespace or type)");
+            fsw.WriteLine("==================================================");
+            foreach (var t in typesArr.OrderBy(t => t.FullName))
+                if ((t.FullName ?? t.Name).IndexOf("Hollywood", StringComparison.OrdinalIgnoreCase) >= 0)
+                    fsw.WriteLine("  " + t.FullName + " (base: " + SafeTypeName(t.BaseType) + ")");
+            fsw.WriteLine();
         }
         Console.WriteLine("Wrote field_search.txt");
 
         // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
         // its equivalent by searching every loaded type's static methods by name instead.
-        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene", "LoadBundle", "LoadAsync", "IsLoaded", "EnsureLoaded", "PreloadBundle", "Preload", "Hands", "PreCache" };
+        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene", "LoadBundle", "LoadAsync", "IsLoaded", "EnsureLoaded", "PreloadBundle", "Preload", "Hands", "PreCache", "Hideout" };
         using (var msw = new StreamWriter("method_search.txt", false, Encoding.UTF8))
         {
             foreach (var needle in methodNameSearches)
