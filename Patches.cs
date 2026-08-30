@@ -215,10 +215,13 @@ namespace HideoutShootout
             DisableBotCulling(createdBot.GetPlayer);
             Plugin.LogSource.LogInfo("Spawned hideout scav target.");
 
-            // Re-dump renderer state once the bot has had frames to render, to confirm whether the
-            // bounds fix actually made the body meshes visible.
-            await Task.Delay(2000);
-            LogBotRendererState(createdBot.GetPlayer, "2s after spawn");
+            if (Settings.EnableRendererDiagnostics?.Value == true)
+            {
+                // Re-dump renderer state once the bot has had frames to render, to compare against
+                // the activation-time dump and see whether anything toggles renderers off afterward.
+                await Task.Delay(2000);
+                LogBotRendererState(createdBot.GetPlayer, "2s after spawn");
+            }
         }
 
         /// <summary>
@@ -1434,19 +1437,6 @@ namespace HideoutShootout
                 return;
             }
 
-            // The bundle-loading candidate below (ToAssetName()) now reliably succeeds, but
-            // LocalPlayer.Create still throws "X is not loaded" for hand-rig bundles
-            // (assets/content/hands/.../*.bundle) that don't resemble the head/body prefab paths
-            // GetAllPrefabPaths(true) was observed returning. Logging every raw .path here settles
-            // whether hands bundles are even present in this set at all, or whether they need a
-            // separate source entirely.
-            string[] handRelatedPaths = resourceKeys
-                .Select(key => key.path)
-                .Where(path => !string.IsNullOrEmpty(path) && path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToArray();
-            Plugin.LogSource.LogInfo(
-                $"Profile {profile.Id}: GetAllPrefabPaths(true) returned {resourceKeys.Length} keys, {handRelatedPaths.Length} hand-related: [{string.Join(", ", handRelatedPaths)}]");
-
             string SafeToAssetName(ResourceKey key)
             {
                 try { return key.ToAssetName(); }
@@ -1487,20 +1477,7 @@ namespace HideoutShootout
                     continue;
                 }
 
-                // If a hand-related resourceKey exists but this candidate's selector returned
-                // null/empty for it, it silently fell out of bundleNames via the Where() above -
-                // that would explain LocalPlayer.Create still failing on a hands bundle even
-                // though the batch as a whole reports Succeed.
-                int handKeysDroppedByThisCandidate = resourceKeys.Count(key =>
-                    !string.IsNullOrEmpty(key.path)
-                    && key.path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0
-                    && string.IsNullOrEmpty(candidate.Selector(key)));
-                if (handKeysDroppedByThisCandidate > 0)
-                {
-                    Plugin.LogSource.LogWarning($"Bundle key candidate '{candidate.Label}' produced an empty string for {handKeysDroppedByThisCandidate} hand-related resourceKey(s) - they were silently excluded from this load.");
-                }
-
-                Plugin.LogSource.LogInfo($"Trying bundle key candidate '{candidate.Label}' ({bundleNames.Length} bundles, e.g. '{bundleNames[0]}') for hideout bot profile {profile.Id}...");
+                LogSpawnDiagnostic($"Trying bundle key candidate '{candidate.Label}' ({bundleNames.Length} bundles, e.g. '{bundleNames[0]}') for hideout bot profile {profile.Id}...");
                 IOperation operation = assetsManager.LoadBundlesAsync(bundleNames);
 
                 // IOperation implements IEnumerator but nothing was driving it - polling .Completed
@@ -1522,12 +1499,9 @@ namespace HideoutShootout
                         break;
                     }
 
-                    double elapsed = (DateTime.UtcNow - waitStart).TotalSeconds;
-                    Plugin.LogSource.LogInfo($"  '{candidate.Label}' still waiting after {elapsed:F0}s: Completed={operation.Completed} Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
-
-                    if (elapsed >= candidateTimeoutSeconds)
+                    if ((DateTime.UtcNow - waitStart).TotalSeconds >= candidateTimeoutSeconds)
                     {
-                        Plugin.LogSource.LogInfo($"  '{candidate.Label}' timed out after {elapsed:F0}s - trying the next candidate (its coroutine keeps running in the background in case it eventually completes).");
+                        LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' timed out - trying the next candidate.");
                         timedOut = true;
                         break;
                     }
@@ -1541,72 +1515,18 @@ namespace HideoutShootout
                 if (operation.Succeed)
                 {
                     LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' WORKED - loaded {bundleNames.Length} bundles for hideout bot profile {profile.Id}.");
-
-                    EnsureHandRigBundlesLoaded(resourceKeys, profile.Id);
                     return;
                 }
 
-                Plugin.LogSource.LogInfo($"  '{candidate.Label}' completed but did not succeed: Failed={operation.Failed} Error={operation.Error} - trying the next candidate.");
+                LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' completed but did not succeed: Failed={operation.Failed} Error={operation.Error} - trying the next candidate.");
             }
 
             Plugin.LogSource.LogWarning($"Every bundle key candidate failed or timed out for hideout bot profile {profile.Id}; proceeding anyway.");
         }
 
-        // Confirmed in-game: the bulk LoadBundlesAsync(string[]) call above only works when its
-        // string conversion (ToAssetName()/rcid/path) happens to match how BundlesManagerClass
-        // actually keys that particular asset - it reliably misses hand-rig bundles
-        // (assets/content/hands/...), leaving LocalPlayer.Create throwing "X is not loaded" for
-        // exactly those even though the bulk call reports Succeed=true.
-        //
-        // PORTING NOTE: two earlier attempts both went through IAssetsManager and both failed to
-        // make hand-rig bundles ready in time - a per-key LoadAssetAsync(ResourceKey) top-up took
-        // over an HTTP-backed path (confirmed by an actual "HTTP/1.1 404 Not Found" on an ordinary
-        // item) and never completed within 15-20s even for a single key. A method-name search
-        // turned up a completely different API: GClass1857 (a static helper) + IEasyAssets (via
-        // Singleton<IEasyAssets>.Instance) - GClass1857.GetAsset<T>(easyAssets, ResourceKey) is a
-        // SYNCHRONOUS call (no Task/IOperation wrapper at all) that another already-installed mod's
-        // own compiled patch is seen calling directly (GClass1857.InstantiateAsset<LoddedSkin> from
-        // a real WeaponPreview call site) - this looks like the actual mechanism the game itself
-        // uses to resolve a ResourceKey to a loaded asset, as opposed to the coarser/async
-        // bundle-file-level APIs tried so far. Calling it here, synchronously, right before
-        // LocalPlayer.Create, for just the hand-related keys.
-        private static void EnsureHandRigBundlesLoaded(ResourceKey[] resourceKeys, string profileId)
-        {
-            ResourceKey[] handKeys = resourceKeys
-                .Where(key => !string.IsNullOrEmpty(key.path) && key.path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToArray();
-
-            if (handKeys.Length == 0)
-            {
-                return;
-            }
-
-            if (!Singleton<IEasyAssets>.Instantiated)
-            {
-                Plugin.LogSource.LogWarning($"Singleton<IEasyAssets> is not instantiated; cannot top-up hand-rig bundles for profile {profileId}.");
-                return;
-            }
-
-            IEasyAssets easyAssets = Singleton<IEasyAssets>.Instance;
-            foreach (ResourceKey key in handKeys)
-            {
-                try
-                {
-                    UnityEngine.GameObject asset = GClass1857.GetAsset<UnityEngine.GameObject>(easyAssets, key);
-                    Plugin.LogSource.LogInfo($"GClass1857.GetAsset<GameObject>('{key.path}') for profile {profileId}: {(asset == null ? "null" : asset.name)}");
-                }
-                catch (Exception ex)
-                {
-                    Plugin.LogSource.LogWarning($"GClass1857.GetAsset threw for '{key.path}': {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-        }
-
         private static System.Collections.IEnumerator DriveOperationCoroutine(IOperation operation, TaskCompletionSource<bool> tcs)
         {
-            Plugin.LogSource.LogInfo("DriveOperationCoroutine started.");
             yield return operation;
-            Plugin.LogSource.LogInfo($"DriveOperationCoroutine finished: Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
             tcs.TrySetResult(operation.Succeed);
         }
 
