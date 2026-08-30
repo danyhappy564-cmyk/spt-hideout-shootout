@@ -164,6 +164,18 @@ class Program
             // from a ResourceKey, and DependencyGraphClass's own members.
             "GClass1857", "IEasyAssets", "IEasyBundle", "EasyAssets",
             "DependencyGraphClass`1", "GClass1661`1",
+
+            // Round 15: confirmed via a real crash stack trace (GClass1857.GetAsset(ResourceKey)
+            // throws the identical "X is not loaded" exception synchronously, for the exact same
+            // hand-rig key, even right after the bulk load reports Succeed=true) that this isn't a
+            // timing/race issue at all - EFT.PlayerBody::Init is the method that actually throws it,
+            // for hand-rig bundles specifically, regardless of which loading API was tried
+            // beforehand. Every other resourceKey category (head/body/items) loads fine through the
+            // exact same APIs. Need PlayerBody's full shape (especially anything related to
+            // "hands"/"preload"/its "customization" parameter type GClass2197) to find out what it
+            // actually checks, and whether there's a real preload path for hands specifically, or a
+            // Harmony patch target if not.
+            "PlayerBody", "GClass2197",
         };
 
         // InGameBundles.PLAYER_BUNDLE_NAME etc. are static fields, not methods - a field-name
@@ -224,7 +236,7 @@ class Program
 
         // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
         // its equivalent by searching every loaded type's static methods by name instead.
-        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene", "LoadBundle", "LoadAsync", "IsLoaded", "EnsureLoaded", "PreloadBundle" };
+        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene", "LoadBundle", "LoadAsync", "IsLoaded", "EnsureLoaded", "PreloadBundle", "Preload", "Hands", "PreCache" };
         using (var msw = new StreamWriter("method_search.txt", false, Encoding.UTF8))
         {
             foreach (var needle in methodNameSearches)
