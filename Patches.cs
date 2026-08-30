@@ -2915,6 +2915,43 @@ namespace HideoutShootout
             {
                 Plugin.LogSource.LogWarning($"Failed to wire HollywoodFX's shot-delegate wrapper: {ex.Message}");
             }
+
+            // PORTING NOTE: confirmed in-game - death gore now fires correctly, but ordinary
+            // (non-lethal) hit effects still don't, on both walls and the bot. Read
+            // ImpactController.Emit: it dereferences ImpactStatic.LocalPlayer.Transform.Original
+            // whenever the hit collider root is non-null (i.e. for every body-shot hit) - and
+            // ImpactStatic.LocalPlayer is set by a SEPARATE patch, GameWorldStartedPostfixPatch,
+            // which targets the exact same never-called-in-the-Hideout GameWorld.OnGameStarted() as
+            // ShotDelegateWrapperPatch above. Same disease, same cure: invoke its Postfix directly.
+            try
+            {
+                Type gameWorldStartedType = AccessTools.TypeByName("HollywoodFX.Patches.GameWorldStartedPostfixPatch");
+                if (gameWorldStartedType == null)
+                {
+                    Plugin.LogSource.LogInfo("HollywoodFX GameWorldStartedPostfixPatch wiring skipped: type not found (HollywoodFX not installed?).");
+                    return;
+                }
+
+                MethodInfo postfix = AccessTools.Method(gameWorldStartedType, "Postfix");
+                if (postfix == null)
+                {
+                    Plugin.LogSource.LogWarning("HollywoodFX GameWorldStartedPostfixPatch wiring skipped: 'Postfix' method not found (installed HollywoodFX version may not match what this was written against).");
+                    return;
+                }
+
+                if (!Singleton<GameWorld>.Instantiated)
+                {
+                    Plugin.LogSource.LogWarning("HollywoodFX GameWorldStartedPostfixPatch wiring skipped: Singleton<GameWorld> is not instantiated yet.");
+                    return;
+                }
+
+                postfix.Invoke(null, new object[] { Singleton<GameWorld>.Instance });
+                Plugin.LogSource.LogInfo("Manually invoked HollywoodFX's GameWorldStartedPostfixPatch.Postfix (sets ImpactStatic.LocalPlayer, needed for hit-effect impacts) - same GameWorld.OnGameStarted() gap as above.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"Failed to wire HollywoodFX's GameWorldStartedPostfixPatch: {ex.Message}");
+            }
         }
     }
 
