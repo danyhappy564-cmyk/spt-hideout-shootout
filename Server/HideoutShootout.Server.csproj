@@ -12,8 +12,8 @@
 	<!-- SPT 4.0.13 publishes its server libraries as NuGet packages instead of the raw
 		 DLL folder 4.1 mods referenced directly, so SptServerDllDir/HintPath no longer
 		 apply - only the deploy target below still needs an install path. -->
-	<SptServerRoot Condition="'$(SptServerRoot)' == ''">C:\EFTDev\SPT</SptServerRoot>
-	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptServerRoot)\user\mods\hideoutshootout-server</ServerModDeployDir>
+	<SptRoot Condition="'$(SptRoot)' == ''">E:\SPT 4.0.10</SptRoot>
+	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptRoot)\user\mods\hideoutshootout-server</ServerModDeployDir>
   </PropertyGroup>
 
   <ItemGroup>
