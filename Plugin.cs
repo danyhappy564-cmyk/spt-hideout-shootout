@@ -1,4 +1,5 @@
-﻿using BepInEx;
+﻿using System;
+using BepInEx;
 using BepInEx.Logging;
 using UnityEngine;
 
@@ -14,16 +15,31 @@ namespace HideoutShootout
             LogSource = Logger;
             Settings.Init(Config);
 
-            new Patch_ShootingRangeBehaviour_ManualEnterLocation().Enable();
-            new Patch_HideoutPlayer_SetPatrol().Enable();
-            new Patch_HideoutPlayerOwner_ExitShootingRange().Enable();
-            new Patch_HideoutPlayerOwner_TranslateExitScreenInput().Enable();
-            new Patch_BotSpawnLimiter_IncreaseUsedPlayerSpawns().Enable();
-            new Patch_BotOwner_Create_Diagnostics().Enable();
-            new Patch_BotCreatorClient_Activate_Diagnostics().Enable();
-            Patch_AcidphantasmBotPlacement_BossProgressiveRegressivePostfix.TryEnable();
+            // Each patch is enabled independently: some target internals whose names or
+            // signatures can shift between EFT client builds (e.g. across SPT versions), so one
+            // patch failing to find its target must not stop the rest from loading.
+            TryEnablePatch("ShootingRangeBehaviour_ManualEnterLocation", () => new Patch_ShootingRangeBehaviour_ManualEnterLocation().Enable());
+            TryEnablePatch("HideoutPlayer_SetPatrol", () => new Patch_HideoutPlayer_SetPatrol().Enable());
+            TryEnablePatch("HideoutPlayerOwner_ExitShootingRange", () => new Patch_HideoutPlayerOwner_ExitShootingRange().Enable());
+            TryEnablePatch("HideoutPlayerOwner_TranslateExitScreenInput", () => new Patch_HideoutPlayerOwner_TranslateExitScreenInput().Enable());
+            TryEnablePatch("BotSpawnLimiter_IncreaseUsedPlayerSpawns", () => new Patch_BotSpawnLimiter_IncreaseUsedPlayerSpawns().Enable());
+            TryEnablePatch("BotOwner_Create_Diagnostics", () => new Patch_BotOwner_Create_Diagnostics().Enable());
+            TryEnablePatch("BotCreatorClient_Activate_Diagnostics", () => new Patch_BotCreatorClient_Activate_Diagnostics().Enable());
+            TryEnablePatch("AcidphantasmBotPlacement_BossProgressiveRegressivePostfix", () => Patch_AcidphantasmBotPlacement_BossProgressiveRegressivePostfix.TryEnable());
 
             LogSource.LogInfo("Hideout Weapon Freedom loaded");
+        }
+
+        private static void TryEnablePatch(string name, Action enable)
+        {
+            try
+            {
+                enable();
+            }
+            catch (Exception ex)
+            {
+                LogSource.LogError($"Patch '{name}' failed to enable and was skipped: {ex.Message}");
+            }
         }
 
         private void Update()

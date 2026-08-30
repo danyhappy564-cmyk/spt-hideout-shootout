@@ -1284,7 +1284,7 @@ namespace HideoutShootout
 
         /// <summary>
         /// Loads everything the bot needs to render into the Raid asset pools, so
-        /// <c>ObjectsFactory.CreatePlayerObject</c> has a populated <c>PlayerAssetPool</c> to pop
+        /// <c>PoolManagerClass.CreatePlayerObject</c> has a populated <c>PlayerAssetPool</c> to pop
         /// from. Argument shape is taken from <c>BotSpawner.SpawnAndActivateNowDebugClient</c>.
         /// <para>
         /// Two separate sets are required. <c>Profile.GetAllPrefabPaths</c> covers the profile's
@@ -1294,12 +1294,20 @@ namespace HideoutShootout
         /// body parts to attach to, and without <c>PLAYER_DEFAULT_ANIMATOR_CONTROLLER</c> the animator
         /// has no layers - which is what produces "LayersDefaultStates.Length N != _animator.layerCount 0".
         /// </para>
+        /// <para>
+        /// PORTING NOTE (SPT 4.0.13): <c>PoolManagerClass</c> is the obfuscated name this singleton
+        /// carries on the older client SPT 4.0.13 ships; <c>ObjectsFactory</c> (this mod's original
+        /// SPT 4.1 target) is 4.1's deobfuscated rename of the same class, per SPT's official 4.0-to-
+        /// 4.1 client migration notes. The nested <c>PoolsCategory</c>/<c>AssemblyType</c> enums and
+        /// the method names below are NOT verified against a real 4.0.13 client; if this fails to
+        /// compile, the compiler error will name the exact member that needs remapping.
+        /// </para>
         /// </summary>
         private static async Task PreloadProfileBundlesAsync(Profile profile)
         {
-            if (!Singleton<ObjectsFactory>.Instantiated)
+            if (!Singleton<PoolManagerClass>.Instantiated)
             {
-                Plugin.LogSource.LogWarning("ObjectsFactory singleton is unavailable; bot prefabs cannot be preloaded and the bot will spawn without a model.");
+                Plugin.LogSource.LogWarning("PoolManagerClass singleton is unavailable; bot prefabs cannot be preloaded and the bot will spawn without a model.");
                 return;
             }
 
@@ -1338,9 +1346,9 @@ namespace HideoutShootout
             // main thread, and everything that resumes after these awaits (LocalPlayer.Create, and
             // BotOwner.Create further up the chain) is Unity API work that must run there. Resuming
             // on a thread-pool thread crashes the process.
-            await Singleton<ObjectsFactory>.Instance.LoadBundlesAndCreatePools(
-                ObjectsFactory.PoolsCategory.Raid,
-                ObjectsFactory.AssemblyType.Local,
+            await Singleton<PoolManagerClass>.Instance.LoadBundlesAndCreatePools(
+                PoolManagerClass.PoolsCategory.Raid,
+                PoolManagerClass.AssemblyType.Local,
                 prefabPaths,
                 JobYieldPriority.General,
                 null,
@@ -1361,6 +1369,13 @@ namespace HideoutShootout
         /// which double-completed the task when invoked outside a raid. SPT 4.1 no longer ships that
         /// patch, so calling <c>LocalPlayer.Create</c> directly is both correct and far less fragile:
         /// it performs every step the manual path had to replicate.
+        /// </para>
+        /// <para>
+        /// PORTING NOTE (SPT 4.0.13): unverified whether 4.0.13's SPT client mod still ships
+        /// DisableDevMaskCheckPatch. If a hideout scav spawn hangs or the bot never activates on
+        /// 4.0.13, that transpiler double-completing this task is the most likely cause - check the
+        /// BepInEx log for a task-already-completed / InvalidOperationException around
+        /// LocalPlayer.Create when EnableSpawnDiagnostics is on.
         /// </para>
         /// </summary>
         private static async Task<LocalPlayer> CreateBotLocalPlayerAsync(GameWorld gameWorld, Profile profile, Vector3 position)
@@ -1387,8 +1402,8 @@ namespace HideoutShootout
                 profile.SetSpawnedInSession(profile.Info.Side == EPlayerSide.Savage);
 
                 // Load the profile's prefabs into the Raid pool before creating the player.
-                // Player.Create pops the body from ObjectsFactory.GetPools(Raid).PlayerAssetPool via
-                // ObjectsFactory.CreatePlayerObject; in a raid GameWorld.InitLevel fills that pool, but
+                // Player.Create pops the body from PoolManagerClass.GetPools(Raid).PlayerAssetPool via
+                // PoolManagerClass.CreatePlayerObject; in a raid GameWorld.InitLevel fills that pool, but
                 // nothing does so in the hideout. Without this the bot spawns with no skeleton or
                 // animator - gear renders, the character model does not, and the weapon's
                 // FirearmsAnimator then NREs against an animator with layerCount 0.
@@ -2147,15 +2162,38 @@ namespace HideoutShootout
         }
     }
 
-    // Diagnostic only. BotCreatorClient.method_3 is the step that actually reveals and activates a
-    // bot: it enables the CharacterController, calls PreActivate with the group from groupAction,
-    // then SwitchBotVisual(bot, true) and finally the callback that raises BotSpawner.OnBotCreated.
+    // Diagnostic only. The step that actually reveals and activates a bot: it enables the
+    // CharacterController, calls PreActivate with the group from groupAction, then
+    // SwitchBotVisual(bot, true) and finally the callback that raises BotSpawner.OnBotCreated.
     // A bot that exists but is invisible and never reported is this method not completing.
+    //
+    // This method's compiler-generated name (method_3 against the SPT 4.1 client this mod
+    // targeted) is an obfuscation artifact that is not guaranteed to stay the same name/index
+    // across EFT client builds - including the older client SPT 4.0.13 ships. Rather than
+    // hardcode a name that may not exist, find it by its distinctive parameter signature, which
+    // obfuscation does not change.
     internal class Patch_BotCreatorClient_Activate_Diagnostics : ModulePatch
     {
         protected override MethodBase GetTargetMethod()
         {
-            return AccessTools.Method(typeof(BotCreatorClient), "method_3");
+            MethodBase target = AccessTools.GetDeclaredMethods(typeof(BotCreatorClient))
+                .FirstOrDefault(m =>
+                {
+                    ParameterInfo[] p = m.GetParameters();
+                    return p.Length == 4
+                        && p[0].ParameterType == typeof(BotZone)
+                        && p[1].ParameterType == typeof(BotOwner)
+                        && p[2].ParameterType == typeof(Action<BotOwner>)
+                        && p[3].ParameterType == typeof(Func<BotOwner, BotZone, BotsGroup>);
+                });
+
+            if (target == null)
+            {
+                throw new InvalidOperationException(
+                    "Could not find BotCreatorClient's bot-activation method by signature (BotZone, BotOwner, Action<BotOwner>, Func<BotOwner, BotZone, BotsGroup>) on this client build. Spawn diagnostics for bot activation are unavailable.");
+            }
+
+            return target;
         }
 
         [PatchPrefix]

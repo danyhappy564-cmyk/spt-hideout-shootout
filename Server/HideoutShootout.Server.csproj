@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-	<TargetFramework>net10.0</TargetFramework>
+	<TargetFramework>net9.0</TargetFramework>
 	<Nullable>enable</Nullable>
 	<ImplicitUsings>enable</ImplicitUsings>
 	<OutputType>Library</OutputType>
@@ -9,35 +9,18 @@
 	<AssemblyVersion>1.1.0</AssemblyVersion>
 	<FileVersion>$(AssemblyVersion)</FileVersion>
 	<Version>$(AssemblyVersion)</Version>
-	<SptServerDllDir Condition="'$(SptServerDllDir)' == ''">C:\EFTDev\SPT_Runtime</SptServerDllDir>
-	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptServerDllDir)\user\mods\hideoutshootout-server</ServerModDeployDir>
+	<!-- SPT 4.0.13 publishes its server libraries as NuGet packages instead of the raw
+		 DLL folder 4.1 mods referenced directly, so SptServerDllDir/HintPath no longer
+		 apply - only the deploy target below still needs an install path. -->
+	<SptServerRoot Condition="'$(SptServerRoot)' == ''">C:\EFTDev\SPT</SptServerRoot>
+	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptServerRoot)\user\mods\hideoutshootout-server</ServerModDeployDir>
   </PropertyGroup>
 
   <ItemGroup>
-	<Reference Include="0Harmony">
-	  <HintPath>$(SptServerDllDir)\0Harmony.dll</HintPath>
-	</Reference>
-	<Reference Include="SemanticVersioning">
-	  <HintPath>$(SptServerDllDir)\SemanticVersioning.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.Common">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.Common.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.DI">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.DI.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.Reflection">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.Reflection.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.Server.Assets">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Assets.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.Server.Core">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Core.dll</HintPath>
-	</Reference>
-	<Reference Include="SPTarkov.Server.Web">
-	  <HintPath>$(SptServerDllDir)\SPTarkov.Server.Web.dll</HintPath>
-	</Reference>
+	<PackageReference Include="SPTarkov.Common" Version="4.0.13" ExcludeAssets="runtime" />
+	<PackageReference Include="SPTarkov.DI" Version="4.0.13" ExcludeAssets="runtime" />
+	<PackageReference Include="SPTarkov.Reflection" Version="4.0.13" ExcludeAssets="runtime" />
+	<PackageReference Include="SPTarkov.Server.Core" Version="4.0.13" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,16 +1,16 @@
 using HideoutShootout.Server.Patches;
-using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
+using SPTarkov.Server.Core.Models.Utils;
 
 namespace HideoutShootout.Server;
 
-// SPT 4.1 dropped OnLoadOrder.PreSptModLoader; Preload is the earliest ordering
-// that still runs as part of normal mod loading.
-[Injectable(TypePriority = OnLoadOrder.Preload + 50)]
+// SPT 4.0.13 keeps OnLoadOrder.PreSptModLoader (4.1 renamed it away from this name),
+// and IOnLoad.OnLoad() has no CancellationToken parameter here.
+[Injectable(TypePriority = OnLoadOrder.PreSptModLoader + 50)]
 public class PatchManager(ISptLogger<PatchManager> logger) : IOnLoad
 {
-    public Task OnLoadAsync(CancellationToken cancellationToken)
+    public Task OnLoad()
     {
         new HideoutBotPrereqPatch().Enable();
         logger.Warning("HideoutShootout.Server loaded");
