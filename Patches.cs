@@ -1387,14 +1387,14 @@ namespace HideoutShootout
                 return;
             }
 
-            // PORTING NOTE: IAssetsManager's own parameter name for this call is "resourceKeys",
-            // not "bundleNames" (the concrete class's own name for the same parameter) - a hint
-            // that a raw ResourceKey.path string may not be the format actually expected. Using
-            // IAssetsManager.GetAssetName(ResourceKey), the manager's own provided conversion
-            // function, instead of guessing at ResourceKey's internal field layout directly.
+            // PORTING NOTE: tried IAssetsManager.GetAssetName(ResourceKey) here first (its
+            // parameter is named "resourceKeys", suggesting a converted format), but it returned
+            // an empty string for every entry - confirmed in-game ("reported no prefab bundle
+            // paths to preload" for every profile). Back to the raw .path field, which at least
+            // produces real, non-empty ".bundle"-suffixed paths matching the error message.
             string[] bundlePaths = profile.GetAllPrefabPaths(true)
                 .Where(key => key != null)
-                .Select(key => assetsManager.GetAssetName(key))
+                .Select(key => key.path)
                 .Where(path => !string.IsNullOrEmpty(path))
                 .Distinct()
                 .ToArray();
@@ -1430,7 +1430,7 @@ namespace HideoutShootout
                 double elapsed = (DateTime.UtcNow - waitStart).TotalSeconds;
                 Plugin.LogSource.LogInfo($"LoadBundlesAsync still waiting after {elapsed:F0}s for profile {profile.Id}: Completed={operation.Completed} Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
 
-                if (elapsed >= 20)
+                if (elapsed >= 90)
                 {
                     Plugin.LogSource.LogWarning($"LoadBundlesAsync timed out after {elapsed:F0}s for hideout bot profile {profile.Id}; proceeding anyway.");
                     return;
