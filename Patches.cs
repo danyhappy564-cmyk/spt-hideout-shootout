@@ -1390,22 +1390,30 @@ namespace HideoutShootout
             // PORTING NOTE: tried IAssetsManager.GetAssetName(ResourceKey) here first (its
             // parameter is named "resourceKeys", suggesting a converted format), but it returned
             // an empty string for every entry - confirmed in-game ("reported no prefab bundle
-            // paths to preload" for every profile). Back to the raw .path field, which at least
-            // produces real, non-empty ".bundle"-suffixed paths matching the error message.
-            string[] bundlePaths = profile.GetAllPrefabPaths(true)
-                .Where(key => key != null)
-                .Select(key => key.path)
-                .Where(path => !string.IsNullOrEmpty(path))
+            // paths to preload" for every profile). .path produces real, non-empty ".bundle"-
+            // suffixed strings, but LoadBundlesAsync/LoadBundleAsync never complete with it even
+            // when manually driven - confirmed the hang isn't a coroutine-pumping issue, since
+            // MoveNext() was called directly by hand and still made no progress. DownloadingUrl/
+            // LoadingUrl point at a plain local StreamingAssets\Windows folder (not a remote CDN),
+            // where real bundle files are typically named by a content hash/id, not by their
+            // human-readable asset path - .path is very likely the wrong string entirely, and
+            // ResourceKey.rcid (untried so far) is the more likely match for whatever these files
+            // are actually named on disk. Trying rcid as the primary key this round; keeping path
+            // around only for the side-by-side diagnostic below.
+            ResourceKey[] resourceKeys = profile.GetAllPrefabPaths(true).Where(key => key != null).ToArray();
+            string[] bundlePaths = resourceKeys
+                .Select(key => key.rcid)
+                .Where(rcid => !string.IsNullOrEmpty(rcid))
                 .Distinct()
                 .ToArray();
 
             if (bundlePaths.Length == 0)
             {
-                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab bundle paths to preload.");
+                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab bundle rcids to preload.");
                 return;
             }
 
-            Plugin.LogSource.LogInfo($"Loading {bundlePaths.Length} bundles for hideout bot profile {profile.Id}...");
+            Plugin.LogSource.LogInfo($"Loading {bundlePaths.Length} bundles (by rcid) for hideout bot profile {profile.Id}...");
             IOperation operation = assetsManager.LoadBundlesAsync(bundlePaths);
 
             // Diagnostic: Completed/Succeed/Failed never flip even after 90s of being driven via a
@@ -1435,21 +1443,35 @@ namespace HideoutShootout
                         Plugin.LogSource.LogInfo(
                             $"BundlesManagerClass: DownloadingUrl='{bundlesManager.DownloadingUrl}' LoadingUrl='{bundlesManager.LoadingUrl}'");
 
-                        string firstBundle = bundlePaths[0];
-                        UnityEngine.AssetBundle existing = bundlesManager.FindBundle(firstBundle);
-                        Plugin.LogSource.LogInfo($"FindBundle('{firstBundle}') before load: {(existing == null ? "null (not already loaded)" : existing.name)}");
-
-                        // Single-bundle load with logErrors:true, in case the batch API
-                        // (LoadBundlesAsync) is swallowing an error message that this one surfaces.
-                        // Only diagnostic - the real preload below still uses the full batch call.
-                        IOperation singleOp = (IOperation)bundlesManager.LoadBundleAsync(firstBundle, true);
-                        for (int i = 0; i < 5 && !singleOp.Completed; i++)
+                        // Side-by-side test of both ResourceKey string candidates on the same
+                        // underlying asset, to see if rcid behaves differently from path (which has
+                        // never once completed, across several rounds, however it's driven).
+                        ResourceKey firstKey = resourceKeys.FirstOrDefault(k => !string.IsNullOrEmpty(k.rcid));
+                        if (firstKey != null)
                         {
-                            singleOp.MoveNext();
-                            Plugin.LogSource.LogInfo($"LoadBundleAsync('{firstBundle}') poll {i}: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
-                            System.Threading.Thread.Sleep(500);
+                            Plugin.LogSource.LogInfo($"Sample ResourceKey: path='{firstKey.path}' rcid='{firstKey.rcid}'");
+
+                            void TrySingleLoad(string label, string bundleName)
+                            {
+                                UnityEngine.AssetBundle existing = bundlesManager.FindBundle(bundleName);
+                                Plugin.LogSource.LogInfo($"FindBundle({label}='{bundleName}') before load: {(existing == null ? "null" : existing.name)}");
+
+                                IOperation singleOp = (IOperation)bundlesManager.LoadBundleAsync(bundleName, true);
+                                for (int i = 0; i < 3 && !singleOp.Completed; i++)
+                                {
+                                    singleOp.MoveNext();
+                                    Plugin.LogSource.LogInfo($"LoadBundleAsync({label}) poll {i}: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
+                                    System.Threading.Thread.Sleep(300);
+                                }
+                                Plugin.LogSource.LogInfo($"LoadBundleAsync({label}) final: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
+                            }
+
+                            TrySingleLoad("rcid", firstKey.rcid);
+                            if (!string.IsNullOrEmpty(firstKey.path))
+                            {
+                                TrySingleLoad("path", firstKey.path);
+                            }
                         }
-                        Plugin.LogSource.LogInfo($"LoadBundleAsync('{firstBundle}') final: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
                     }
                 }
             }
