@@ -8,6 +8,9 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Text;
+using ICSharpCode.Decompiler;
+using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.Metadata;
 
 // One-off tool: dumps type/member info from the real installed EFT client assemblies so the
 // SPT 4.0.13 backport can be fixed against actual signatures instead of guesses. Not part of
@@ -357,7 +360,106 @@ class Program
         }
 
         Console.WriteLine("Wrote dump.txt");
+
+        // Round 13: reflection signatures alone can't explain WHY the LoadBundlesAsync operation
+        // never completes (Completed/Succeed/Failed stay false for 90s even though it's driven via
+        // a coroutine) - AssetsManagerClass+Class3515 (the concrete operation LoadBundlesAsync
+        // returns) exposes no overridden MoveNext/completion method of its own, so the actual
+        // polling/completion logic must live in its base class, Comfort.Common.Operation`1. Reading
+        // the actual method bodies (via ICSharpCode.Decompiler, working straight off the same PE
+        // files reflection already loaded) instead of guessing further.
+        using (var dw = new StreamWriter("decompile.txt", false, Encoding.UTF8))
+        {
+            void DecompileWholeType(string fullName)
+            {
+                dw.WriteLine("==================================================");
+                dw.WriteLine("DECOMPILE TYPE: " + fullName);
+                dw.WriteLine("==================================================");
+                dw.Flush();
+                Type t = typesArr.FirstOrDefault(x => x.FullName == fullName);
+                if (t == null)
+                {
+                    dw.WriteLine("  NOT FOUND.");
+                    dw.WriteLine();
+                    return;
+                }
+                dw.WriteLine(TryDecompile(t.Module.FullyQualifiedName, MetadataTokens.EntityHandle(t.MetadataToken)));
+                dw.WriteLine();
+            }
+
+            void DecompileMethodByName(string typeFullName, string methodName)
+            {
+                dw.WriteLine("==================================================");
+                dw.WriteLine("DECOMPILE METHOD: " + typeFullName + "." + methodName);
+                dw.WriteLine("==================================================");
+                dw.Flush();
+                Type t = typesArr.FirstOrDefault(x => x.FullName == typeFullName);
+                if (t == null)
+                {
+                    dw.WriteLine("  TYPE NOT FOUND.");
+                    dw.WriteLine();
+                    return;
+                }
+                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
+                    | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+                MethodInfo[] methods;
+                try { methods = t.GetMethods(flags).Where(m => m.Name == methodName).ToArray(); }
+                catch (Exception ex) { dw.WriteLine("  could not enumerate methods: " + ex.Message); dw.WriteLine(); return; }
+
+                if (methods.Length == 0)
+                {
+                    dw.WriteLine("  METHOD NOT FOUND on this type.");
+                    dw.WriteLine();
+                    return;
+                }
+
+                foreach (var m in methods)
+                    dw.WriteLine(TryDecompile(t.Module.FullyQualifiedName, MetadataTokens.EntityHandle(m.MetadataToken)));
+                dw.WriteLine();
+            }
+
+            DecompileWholeType("Comfort.Common.Operation`1");
+            DecompileWholeType("Comfort.Common.AbstractOperation");
+            DecompileWholeType("AssetsManagerClass+Class3515");
+            DecompileMethodByName("BundlesManagerClass", "LoadBundleAsync");
+            DecompileMethodByName("AssetsManagerClass", "LoadBundlesAsync");
+        }
+        Console.WriteLine("Wrote decompile.txt");
+
         Console.WriteLine("DONE");
+    }
+
+    static readonly Dictionary<string, CSharpDecompiler> _decompilerCache = new();
+
+    static CSharpDecompiler GetDecompiler(string dllPath)
+    {
+        if (_decompilerCache.TryGetValue(dllPath, out var cached))
+            return cached;
+
+        var mainModule = new PEFile(dllPath);
+        string targetFramework = mainModule.DetectTargetFrameworkId();
+
+        // Cross-assembly type references (e.g. a method in Assembly-CSharp.dll referencing a type
+        // from Comfort.dll) need the resolver to know where to look - every dependency lives
+        // alongside dllPath in the same Managed folder, so that one search directory covers it.
+        var resolver = new UniversalAssemblyResolver(dllPath, throwOnError: false, targetFramework);
+        resolver.AddSearchDirectory(ManagedDir);
+        var settings = new DecompilerSettings { ThrowOnAssemblyResolveErrors = false };
+        var decompiler = new CSharpDecompiler(mainModule, resolver, settings);
+        _decompilerCache[dllPath] = decompiler;
+        return decompiler;
+    }
+
+    static string TryDecompile(string dllPath, EntityHandle handle)
+    {
+        try
+        {
+            return GetDecompiler(dllPath).DecompileAsString(new[] { handle });
+        }
+        catch (Exception ex)
+        {
+            return "  <decompile failed: " + ex + ">";
+        }
     }
 
     static void DumpType(StreamWriter w, Type t, Type[] allTypes)
