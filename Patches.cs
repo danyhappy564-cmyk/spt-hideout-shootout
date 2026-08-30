@@ -2884,19 +2884,27 @@ namespace HideoutShootout
                 Type shotWrapperType = AccessTools.TypeByName("HollywoodFX.Patches.ShotDelegateWrapperPatch");
                 if (shotWrapperType == null)
                 {
+                    Plugin.LogSource.LogInfo("HollywoodFX shot-delegate wiring skipped: type 'HollywoodFX.Patches.ShotDelegateWrapperPatch' not found (HollywoodFX not installed?).");
                     return;
                 }
 
                 FieldInfo originalDelegateField = AccessTools.Field(shotWrapperType, "OriginalShotDelegate");
                 if (originalDelegateField != null && originalDelegateField.GetValue(null) != null)
                 {
-                    LogSpawnDiagnostic("HollywoodFX shot-delegate wrapper already wired; skipping.");
+                    Plugin.LogSource.LogInfo("HollywoodFX shot-delegate wrapper already wired; skipping.");
                     return;
                 }
 
                 MethodInfo postfix = AccessTools.Method(shotWrapperType, "Postfix");
-                if (postfix == null || !Singleton<GameWorld>.Instantiated)
+                if (postfix == null)
                 {
+                    Plugin.LogSource.LogWarning("HollywoodFX shot-delegate wiring skipped: 'Postfix' method not found on ShotDelegateWrapperPatch (installed HollywoodFX version may not match what this was written against).");
+                    return;
+                }
+
+                if (!Singleton<GameWorld>.Instantiated)
+                {
+                    Plugin.LogSource.LogWarning("HollywoodFX shot-delegate wiring skipped: Singleton<GameWorld> is not instantiated yet.");
                     return;
                 }
 
