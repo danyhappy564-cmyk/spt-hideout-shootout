@@ -1281,17 +1281,40 @@ namespace HideoutShootout
         // singleton underneath it, and Singleton<T> (Comfort.Common) is the standard accessor this
         // same codebase already uses for GameWorld/IBotGame - the same pattern applies here.
         /// <summary>
-        /// Resolves <see cref="ISession"/> via <see cref="Singleton{T}"/> over
-        /// <see cref="TarkovApplication"/>. The session backs profile generation requests from
+        /// Resolves <see cref="ISession"/>. The session backs profile generation requests from
         /// <see cref="BotsPresets.CreateProfile"/>.
         /// </summary>
         private static ISession TryGetBackEndSession()
         {
             try
             {
-                return Singleton<TarkovApplication>.Instantiated
-                    ? Singleton<TarkovApplication>.Instance.GetClientBackEndSession()
-                    : null;
+                if (!Singleton<TarkovApplication>.Instantiated)
+                {
+                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication> is not instantiated.");
+                }
+                else
+                {
+                    ISession session = Singleton<TarkovApplication>.Instance.GetClientBackEndSession();
+                    if (session != null)
+                    {
+                        return session;
+                    }
+                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication>.GetClientBackEndSession() returned null.");
+                }
+
+                // Fallback: AbstractGame (already resolved successfully elsewhere in the hideout
+                // spawn pipeline via Singleton<AbstractGame>.Instance) or its runtime type may expose
+                // the session directly under the name BackEndSession, per EFT.NetworkGame`1 and
+                // Interface13's get_BackEndSession() found by name search - not confirmed to apply
+                // to HideoutGame specifically, hence the fallback rather than the primary path.
+                if (Singleton<AbstractGame>.Instantiated
+                    && GetMemberValue(Singleton<AbstractGame>.Instance, "BackEndSession") is ISession fromGame)
+                {
+                    LogSpawnDiagnostic("TryGetBackEndSession: resolved via AbstractGame.BackEndSession fallback.");
+                    return fromGame;
+                }
+
+                return null;
             }
             catch (Exception ex)
             {
