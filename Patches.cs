@@ -139,6 +139,25 @@ namespace HideoutShootout
                 }
             };
 
+            // PORTING NOTE: OnBotCreated is a plain C# multicast event, not a Harmony patch chain -
+            // if another already-installed mod's own handler (subscribed earlier, e.g. at its own
+            // plugin Awake/Start, so ahead of ours in the invocation list) throws when handling a bot
+            // it doesn't expect from the synthetic hideout context, every later subscriber - including
+            // ours - never runs, and the exception propagates out of BotCreatorClient.method_3 as a
+            // hard failure. Confirmed in-game: LocalPlayer.Create and BotOwner.Create both succeed,
+            // then MoreBotsAPI.Components.HuntManager.OnBotCreated NREs on our bot and the whole
+            // activation call throws before OnBotCreated ever reaches botCreatedHandler - leaving a
+            // fully-formed, uncontrolled bot in the scene that we then report as "no bot created" and
+            // retry, compounding into several invisible/uncontrolled bots per session. Snapshotting
+            // GameWorld's players before spawning and diffing after lets us recover the bot by
+            // identity even when the event chain was broken by someone else's handler.
+            HashSet<string> profileIdsBeforeSpawn = Singleton<GameWorld>.Instantiated
+                ? new HashSet<string>(Singleton<GameWorld>.Instance.AllAlivePlayersList
+                    .OfType<LocalPlayer>()
+                    .Select(p => p.Profile?.Id)
+                    .Where(id => id != null))
+                : new HashSet<string>();
+
             spawner.OnBotCreated += botCreatedHandler;
             try
             {
@@ -162,6 +181,19 @@ namespace HideoutShootout
             finally
             {
                 spawner.OnBotCreated -= botCreatedHandler;
+            }
+
+            if (createdBot == null && Singleton<GameWorld>.Instantiated)
+            {
+                LocalPlayer newPlayer = Singleton<GameWorld>.Instance.AllAlivePlayersList
+                    .OfType<LocalPlayer>()
+                    .FirstOrDefault(p => p.Profile != null && !profileIdsBeforeSpawn.Contains(p.Profile.Id));
+
+                if (newPlayer != null && TryResolveMemberByTypeDeep(newPlayer, typeof(BotOwner), 3) is BotOwner recoveredBotOwner)
+                {
+                    createdBot = recoveredBotOwner;
+                    LogSpawnDiagnostic($"Recovered BotOwner for profile {newPlayer.Profile.Id} via GameWorld diff - OnBotCreated never reached our handler (likely another mod's handler threw first).");
+                }
             }
 
             if (createdBot == null)
