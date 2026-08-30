@@ -1501,7 +1501,7 @@ namespace HideoutShootout
                 if (operation.Succeed)
                 {
                     LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' WORKED - loaded {bundleNames.Length} bundles for hideout bot profile {profile.Id}.");
-                    await EnsureAllResourceKeysLoadedAsync(assetsManager, resourceKeys, profile.Id);
+                    await EnsureHandRigBundlesLoadedAsync(assetsManager, resourceKeys, profile.Id);
                     return;
                 }
 
@@ -1515,15 +1515,29 @@ namespace HideoutShootout
         // string conversion (ToAssetName()/rcid/path) happens to match how BundlesManagerClass
         // actually keys that particular asset - it reliably misses hand-rig bundles
         // (assets/content/hands/...), leaving LocalPlayer.Create throwing "X is not loaded" for
-        // exactly those even though the bulk call reports Succeed=true. LoadAssetAsync(ResourceKey)
-        // takes the ResourceKey object directly instead of a hand-converted string, so it can't hit
-        // that mismatch - use it as a targeted top-up pass for every key. Run in parallel: most keys
-        // are already cached from the bulk load above and will resolve instantly, so this only adds
-        // real wait time for whatever the bulk pass actually missed.
-        private static async Task EnsureAllResourceKeysLoadedAsync(IAssetsManager assetsManager, ResourceKey[] resourceKeys, string profileId)
+        // exactly those even though the bulk call reports Succeed=true.
+        //
+        // PORTING NOTE: a first attempt ran LoadAssetAsync(ResourceKey) as a top-up over EVERY
+        // resourceKey (not just hands), reasoning that passing the ResourceKey object directly
+        // sidesteps any string-format mismatch. Confirmed in-game that this call path goes over
+        // an HTTP layer (a local bundle server, judging by the "HTTP/1.1 404 Not Found" error it
+        // produced for an ordinary vanilla item) that's far slower than the bulk call and doesn't
+        // reliably finish in time - 51 of 52 calls were still pending after a 20s wait. Scoped down
+        // to just the (usually 1-3) hand-related keys so the added wait stays small regardless of
+        // how slow this path is.
+        private static async Task EnsureHandRigBundlesLoadedAsync(IAssetsManager assetsManager, ResourceKey[] resourceKeys, string profileId)
         {
+            ResourceKey[] handKeys = resourceKeys
+                .Where(key => !string.IsNullOrEmpty(key.path) && key.path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToArray();
+
+            if (handKeys.Length == 0)
+            {
+                return;
+            }
+
             var pending = new List<(ResourceKey Key, IOperation Op, TaskCompletionSource<bool> Tcs)>();
-            foreach (ResourceKey key in resourceKeys)
+            foreach (ResourceKey key in handKeys)
             {
                 try
                 {
@@ -1539,20 +1553,16 @@ namespace HideoutShootout
             }
 
             DateTime waitStart = DateTime.UtcNow;
-            const double timeoutSeconds = 20;
+            const double timeoutSeconds = 15;
             while (pending.Any(p => !p.Tcs.Task.IsCompleted) && (DateTime.UtcNow - waitStart).TotalSeconds < timeoutSeconds)
             {
                 await Task.Delay(250);
             }
 
-            int succeeded = pending.Count(p => p.Tcs.Task.IsCompleted && p.Op.Succeed);
-            int failed = pending.Count(p => p.Tcs.Task.IsCompleted && !p.Op.Succeed);
-            int stillPending = pending.Count(p => !p.Tcs.Task.IsCompleted);
-            Plugin.LogSource.LogInfo($"Per-key LoadAssetAsync top-up for profile {profileId}: {succeeded} succeeded, {failed} failed, {stillPending} still pending after {timeoutSeconds}s.");
-
-            foreach (var p in pending.Where(p => p.Tcs.Task.IsCompleted && !p.Op.Succeed))
+            foreach (var p in pending)
             {
-                Plugin.LogSource.LogWarning($"LoadAssetAsync(ResourceKey) did not succeed for '{p.Key.path}': Failed={p.Op.Failed} Error={p.Op.Error}");
+                string state = !p.Tcs.Task.IsCompleted ? "still pending" : p.Op.Succeed ? "succeeded" : $"did not succeed (Failed={p.Op.Failed} Error={p.Op.Error})";
+                Plugin.LogSource.LogInfo($"Hand-rig top-up for profile {profileId}: '{p.Key.path}' -> {state}");
             }
         }
 
