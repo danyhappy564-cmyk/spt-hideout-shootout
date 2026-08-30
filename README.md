@@ -1,65 +1,58 @@
 ## Hideout Shootout
 
-A mod for SPT 4.0.13 that lets you keep your weapon out in the Hideout outside of the shooting range, and spawn a real, fully-functional scav bot to shoot at.
+하이드아웃 사격장 밖에서도 무기를 계속 들고 있을 수 있고, 진짜로 맞고 반응하는 스카브 타겟을 소환해서 쏴볼 수 있는 SPT 4.0.13용 모드입니다.
 
 ---
 
-### Compatibility
-- Target: SPT 4.0.13 (backported from the upstream SPT 4.1 release)
+### 대상 버전
+- **SPT 4.0.13** (원본은 SPT 4.1용, 이 저장소에서 4.0.13으로 백포트함)
 
-### Installation
-- Place the folders from the release zip into your SPT root folder. It contains both a client plugin (`BepInEx/plugins/`) and a server mod (`SPT/user/mods/`) — both are required.
-- Works out of the box. Settings are optional, via the BepInEx configuration manager.
+### 설치
+- 릴리즈 zip 안의 폴더들을 SPT 루트 폴더에 그대로 넣으면 됩니다. 클라이언트 플러그인(`BepInEx/plugins/`)과 서버 모드(`SPT/user/mods/`) 둘 다 들어있고, 둘 다 필요합니다.
+- 설치만 하면 바로 작동합니다. 설정은 BepInEx Configuration Manager에서 선택 사항으로 조절할 수 있습니다.
 
-### How to Use
-- Enter the Hideout and step into the shooting range.
-- Normally your weapon holsters when you turn too far or walk away. With this mod you keep it out until you press ESC.
-- Press **F11** to spawn a scav target in front of you, or to replace the current one.
-- The scav is a genuine `BotOwner`/`LocalPlayer` — it takes hits, ragdolls, and dies like a real bot — not a static prop. It spawns frozen in place so it stays put as a target.
+### 사용법
+- 하이드아웃에 들어가서 사격장 안으로 이동합니다.
+- 원래는 몸을 너무 많이 돌리거나 자리를 벗어나면 무기가 자동으로 홀스터에 들어가는데, 이 모드를 쓰면 ESC를 누르기 전까지는 계속 무기를 들고 있습니다.
+- **F11**을 누르면 앞에 스카브 타겟이 소환됩니다. 이미 하나 있으면 새로 교체됩니다.
+- 이 스카브는 그냥 세워진 인형이 아니라 진짜 `BotOwner`/`LocalPlayer`입니다 — 맞으면 반응하고, 래그돌 되고, 죽습니다. 다만 제자리에 고정된 채로 스폰되기 때문에 사격 연습용 타겟처럼 그 자리에 계속 서 있습니다.
 
-### Known Limitation
-- The scav spawns with no hand-rig model (the game's own hand-rig bundle for its outfit isn't reachable outside of a real raid's loading screen, and every loading API we could reach in `4.0.13` hits the same wall). Everything else — head, body, gear, weapon, hit reactions, death — renders and behaves normally.
-- Third-party visual-effects mods (e.g. HollywoodFX) that explicitly detect and skip the Hideout will not produce blood/impact FX on the scav, since that's a deliberate choice made in that mod, not something this mod can change on its own.
+### 알려진 제약사항
+- 스폰된 스카브는 손(hand-rig) 모델이 없는 상태로 나옵니다 — 해당 스킨의 손 번들은 실제 레이드의 로딩 화면을 거쳐야만 준비되는 리소스라서, 4.0.13에서 접근 가능한 어떤 로딩 API를 써도 하이드아웃 안에서는 미리 로드할 방법을 찾지 못했습니다. 그 외 머리·몸·장비·무기·피격 반응·사망은 전부 정상적으로 동작합니다.
+- HollywoodFX는 별도 호환 패치를 넣어서 하이드아웃에서도 피격 이펙트가 나오도록 처리했습니다 (아래 변경 사항 참고). 그 외에 "하이드아웃이면 스킵"하도록 만들어진 다른 이펙트 모드가 있다면, 그건 그 모드가 자체적으로 결정한 동작이라 이 모드 쪽에서 손댈 수 있는 부분이 아닙니다.
 
-### 4.0.13 Backport Notes
-- **Server mod** (`Server/`): retargeted `net10.0` → `net9.0`, switched from raw DLL references
-  to the `SPTarkov.*` 4.0.13 NuGet packages, converted the metadata record from 4.1's
-  `IModMetadata` to 4.0.13's `AbstractModMetadata`, and moved the loader priority to
-  `OnLoadOrder.PreSptModLoader` with `IOnLoad.OnLoad()` (no `CancellationToken` parameter).
-- **Client mod — weapon-out-of-holster feature**: unchanged in behavior; hardened patch loading
-  so one patch failing to find its target no longer blocks the rest (`Plugin.cs`).
-- **Client mod — scav spawning feature**: this is the bulk of the backport, since 4.0.13's client
-  is far less deobfuscated than 4.1's and the game normally never constructs a full player
-  character outside of a real raid's own loading/bundle-preload machinery. Highlights, all
-  confirmed against a real 4.0.13 client:
-  - Bootstraps a working `BotSpawner`/`BotsController`/`ISpawnSystem`/`ISession` from scratch in
-    the Hideout, where the game never initializes any of them.
-  - Preloads the scav profile's bundles through `IAssetsManager.LoadBundlesAsync`, trying several
-    `ResourceKey → string` conversions in order at runtime (`ToAssetName()`, `rcid`, `path`) and
-    committing to whichever one actually succeeds, since which one works isn't consistent across
-    every asset category.
-  - Strips the `Hands` body part from the scav's customization before creation, since the game's
-    own hand-rig bundle for a given outfit is unreachable outside of a raid's own preload step no
-    matter which loading API is used — see Known Limitation above.
-  - Recovers the spawned bot by scanning `GameWorld`'s player list when another already-installed
-    mod's own `BotSpawner.OnBotCreated` handler throws first (a plain multicast event — one bad
-    subscriber blocks every handler after it, ours included).
-  - Works around a real bug in this client's `LocalPlayer.Create` (SPT's `DisableDevMaskCheckPatch`
-    transpiler double-completes the async state machine outside of a raid) by temporarily
-    unpatching it for the duration of the call.
-  - Disables offline player culling on the freshly spawned bot so its body actually renders instead
-    of being invisible until it takes a hit.
-- If something still doesn't work on a given install, turn on **Enable Spawn Diagnostics** in the
-  BepInEx configuration manager and check the BepInEx log — the failure will point at the exact
-  step and member involved.
+---
 
-### Settings
-- **Spawn Scav Hotkey** — rebind the spawn key (default F11).
-- **Bot Spawn Distance** — how far ahead the scav is placed.
-- **Face Scav Toward Player** — have the scav spawn facing you.
-- **Enable Spawn Diagnostics** — log the hideout bot spawn pipeline: bootstrap candidates, bundle preloads, LocalPlayer creation, BotOwner creation and bot activation.
-- **Enable Renderer Diagnostics** — dump the spawned scav's renderer state at activation and again 2 seconds later. Use if the bot ever spawns invisible.
-- **Enable Harmony Patch Diagnostics** — log which mods have patched `LocalPlayer.Create`. Use if bot creation fails and another mod is suspected.
+### 변경 사항 (2026-08-30, SPT 4.0.13 백포트)
+
+원본 모드는 SPT 4.1 기준으로 작성되어 있어서, 이번에 SPT 4.0.13으로 대상 버전을 낮추면서 서버·클라이언트 양쪽을 손봤습니다. 4.0.13 클라이언트는 4.1보다 훨씬 덜 탈난독화되어 있어서, 특히 "하이드아웃에서 스카브 소환" 기능은 게임이 실제 레이드 로딩 과정 없이는 절대 만들지 않는 것(완전한 플레이어 캐릭터)을 억지로 만들어내야 했기 때문에 손이 많이 갔습니다.
+
+**서버 (`Server/`)**
+- `net10.0` → `net9.0`으로 타겟 프레임워크 변경, `SPTarkov.*` 4.0.13 NuGet 패키지로 전환.
+- 메타데이터를 4.1의 `IModMetadata`에서 4.0.13의 `AbstractModMetadata`로 변환.
+- 로더 우선순위를 `OnLoadOrder.PreSptModLoader` + `IOnLoad.OnLoad()`로 변경 (`CancellationToken` 파라미터 없음).
+
+**클라이언트 — 무기 홀스터 유지 기능**
+- 동작은 그대로이고, 패치 하나가 대상을 못 찾아도 나머지 패치들이 계속 로드되도록 로딩 방식만 강화했습니다.
+
+**클라이언트 — 스카브 소환 기능 (이번 백포트의 핵심 작업)**
+- 하이드아웃에는 원래 존재하지 않는 `BotSpawner`/`BotsController`/`ISpawnSystem`/`ISession`을 처음부터 직접 부트스트랩.
+- 스카브 프로필의 번들을 `IAssetsManager.LoadBundlesAsync`로 미리 로드하는데, `ResourceKey`를 문자열로 바꾸는 방식(`ToAssetName()`, `rcid`, `path`)이 에셋 종류마다 다르게 먹혀서, 런타임에 여러 방식을 순서대로 시도해보고 실제로 성공하는 걸 채택하도록 구현.
+- 캐릭터 생성 전에 커스터마이징에서 `Hands` 파츠를 제거 — 어떤 로딩 API를 써도 손 번들만은 레이드 밖에서 준비할 방법이 없어서, 손 없이라도 스폰은 되게 하는 쪽을 택함 (위 "알려진 제약사항" 참고).
+- 이미 설치된 다른 모드(예: MoreBotsAPI)가 `BotSpawner.OnBotCreated` 이벤트 핸들러에서 예외를 던지면 — 이건 일반 멀티캐스트 이벤트라 한 핸들러가 죽으면 그 뒤에 등록된 핸들러(이 모드 것 포함)가 전부 실행이 안 됩니다 — `GameWorld`의 플레이어 목록을 직접 뒤져서 방금 생긴 봇을 복구하도록 처리.
+- 이 클라이언트의 `LocalPlayer.Create`에 있는 실제 버그(SPT의 `DisableDevMaskCheckPatch` 트랜스파일러가 레이드 밖에서 async 상태 머신을 두 번 완료 처리해버림)를 호출 도중에만 패치를 임시로 떼었다 붙이는 방식으로 우회.
+- 스폰 직후 오프라인 컬링을 꺼서, 피격당하기 전까지 몸이 안 보이던 문제를 해결.
+- **HollywoodFX 호환 패치 추가**: HollywoodFX는 하이드아웃을 감지하면 피/충격 이펙트 시스템 초기화를 자체적으로 스킵하도록 만들어져 있는데(성능상의 의도적 설계), HollywoodFX 소스를 직접 확인해서 그 판단 기준이 되는 공유 플래그(`GameWorldAwakePrefixPatch.IsHideout`) 하나를 강제로 `false`로 만드는 패치를 추가했습니다. 이 플래그를 참조하는 나머지 이펙트 관련 패치들은 전부 자동으로 정상 동작하고, 실제 레이드에는 영향이 없습니다. HollywoodFX가 설치되어 있지 않아도 안전하게 스킵됩니다 (리플렉션 기반, 컴파일 타임 의존성 없음).
+
+무언가 안 될 경우, BepInEx Configuration Manager에서 **Enable Spawn Diagnostics**를 켜고 BepInEx 로그를 확인하면 정확히 어느 단계, 어느 멤버에서 막혔는지 나옵니다.
+
+### 설정
+- **Spawn Scav Hotkey** — 소환 키 재설정 (기본값 F11).
+- **Bot Spawn Distance** — 스카브가 소환되는 거리.
+- **Face Scav Toward Player** — 스카브가 플레이어를 바라보도록 소환할지 여부.
+- **Enable Spawn Diagnostics** — 하이드아웃 봇 소환 파이프라인(부트스트랩, 번들 프리로드, `LocalPlayer` 생성, `BotOwner` 생성, 봇 활성화) 로그.
+- **Enable Renderer Diagnostics** — 스폰된 스카브의 렌더러 상태를 활성화 시점과 2초 후에 각각 덤프. 봇이 안 보이는 상태로 스폰될 때 사용.
+- **Enable Harmony Patch Diagnostics** — `LocalPlayer.Create`를 패치한 모드 목록 로그. 봇 생성이 실패하고 다른 모드가 의심될 때 사용.
 
 ---
 
