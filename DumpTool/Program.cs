@@ -107,6 +107,7 @@ class Program
         //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
+            "BasePlayerCulling", "OfflinePlayerCulling",
             "CharacterControllerSpawner",
             "GClass2265", "GClass2268", "GClass2269", "LocationStatisticsCollectorAbstractClass",
             "GClass1854", "GClass1855", "GClass1856",
@@ -157,6 +158,14 @@ class Program
             foreach (var t in typesArr)
                 if (t.Name.IndexOf("EventDispatcher", StringComparison.OrdinalIgnoreCase) >= 0)
                     fsw.WriteLine("  " + t.FullName);
+            fsw.WriteLine();
+
+            fsw.WriteLine("==================================================");
+            fsw.WriteLine("TYPE NAME CONTAINS: Culling");
+            fsw.WriteLine("==================================================");
+            foreach (var t in typesArr)
+                if (t.Name.IndexOf("Culling", StringComparison.OrdinalIgnoreCase) >= 0)
+                    fsw.WriteLine("  " + t.FullName + " (base: " + SafeTypeName(t.BaseType) + ")");
         }
         Console.WriteLine("Wrote field_search.txt");
 
@@ -400,6 +409,7 @@ class Program
 
     static string SafeTypeName(Type t)
     {
+        if (t == null) return "null";
         try { return t.ToString(); }
         catch (Exception ex) { return "<?:" + ex.GetType().Name + ">"; }
     }

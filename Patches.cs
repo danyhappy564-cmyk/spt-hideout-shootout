@@ -1417,9 +1417,19 @@ namespace HideoutShootout
                 // filter isn't confirmed (both are equally-shaped siblings of abstract GClass1854) -
                 // GClass1855 is a guess, verify visually in-game (bot's body customization should
                 // render normally in third person; if not, try GClass1856.Default instead).
-                // Still open: AppEnvironment.Config.CharacterController.BotPlayerMode's replacement -
-                // CharacterControllerSpawner.Mode is a config type here, not an enum, so this needs
-                // either an existing preset instance or building one from Mode's own fields.
+                // AppEnvironment.Config.CharacterController.BotPlayerMode's replacement: no existing
+                // preset instance of CharacterControllerSpawner.Mode exists anywhere in this client
+                // (searched every static field/property), so built one directly - it's a plain
+                // object with public fields, no constructor arguments. ControllerType.
+                // BotAISteeringImpostorWithDoors is the one enum value whose name says "bot"; the
+                // four bool fields are left at their type's defaults (all false) since the real
+                // vanilla bot preset's values aren't known - if a hideout-spawned bot moves/collides
+                // oddly, this is the first place to try toggling them.
+                CharacterControllerSpawner.Mode botControllerMode = new CharacterControllerSpawner.Mode
+                {
+                    Type = CharacterControllerSpawner.ControllerType.BotAISteeringImpostorWithDoors,
+                };
+
                 LocalPlayer player = await LocalPlayer.Create(
                     gameWorld,
                     playerId,
@@ -1433,7 +1443,7 @@ namespace HideoutShootout
                     EUpdateQueue.Update,
                     Player.EUpdateMode.Auto,
                     Player.EUpdateMode.Auto,
-                    AppEnvironment.Config.CharacterController.BotPlayerMode,
+                    botControllerMode,
                     () => 1f,
                     () => 1f,
                     new GClass2265(),
@@ -1991,7 +2001,12 @@ namespace HideoutShootout
                 Player botPlayer = bot.GetPlayer;
                 if (botPlayer?.MovementContext != null)
                 {
-                    botPlayer.MovementContext.SetRotation(new Vector2(yaw, 0f));
+                    // PORTING NOTE (SPT 4.0.13): MovementContext has no SetRotation(Vector2) here.
+                    // SetDirectlyLookRotations(current, previous) is the confirmed method whose name
+                    // matches the intent (an immediate, unsmoothed rotation set); passing the same
+                    // value for both since there's no tracked "previous" rotation at this call site.
+                    Vector2 rotation = new Vector2(yaw, 0f);
+                    botPlayer.MovementContext.SetDirectlyLookRotations(rotation, rotation);
                 }
                 else
                 {
