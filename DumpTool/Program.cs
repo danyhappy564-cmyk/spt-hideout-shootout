@@ -107,14 +107,15 @@ class Program
         //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
-            // Round 10: bootstrap and session lookup both now work (confirmed in-game). Current
-            // blocker: "assets/content/hands/wild/wild_body_1_firsthands.bundle is not loaded. You
-            // should load it first." - thrown from inside LocalPlayer.Create because
-            // PreloadProfileBundlesAsync now only calls RegisterPools (pool capacity), not an
-            // actual per-resource bundle load, since LoadBundlesAndCreatePools is uncallable
-            // (broken delegate parameter). Need a working bundle-load API - dumping IEasyAssets
-            // (the asset-loading abstraction threaded through every PoolManagerClass method) to
-            // find one.
+            // Round 11: IEasyAssets turned out to be a dead end (just one property, a dependency
+            // graph object). The method-name search found a much more promising candidate instead:
+            // IAssetsManager.LoadBundlesAsync(string[] resourceKeys) -> Comfort.Common.IOperation,
+            // with AssetsManagerClass as its concrete implementor. Need: IAssetsManager's full shape
+            // and how to obtain a live instance (likely Singleton<IAssetsManager>, hence the static-
+            // member-by-type search below), Comfort.Common.IOperation (to know how to await/poll the
+            // result), and ResourceKey (profile.GetAllPrefabPaths returns these, but LoadBundlesAsync
+            // wants plain strings - need to know how to get the bundle path string out of one).
+            "IAssetsManager", "AssetsManagerClass", "ResourceKey", "IOperation",
             "IEasyAssets",
             "HideoutGame", "ISpawnSystem",
             "LocalPlayerCullingHandlerClass", "GClass917",
@@ -232,7 +233,7 @@ class Program
 
             // GetMainApp() might really be a static property/field instead of a method (e.g. a
             // Singleton<T>-style accessor or a static field SPT's own patches populate).
-            string[] typeNameNeedles = { "ClientApplication", "TarkovApplication", "PatchConstants" };
+            string[] typeNameNeedles = { "ClientApplication", "TarkovApplication", "PatchConstants", "IAssetsManager" };
             foreach (var needle in typeNameNeedles)
             {
                 msw.WriteLine("==================================================");
