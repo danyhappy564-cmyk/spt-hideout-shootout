@@ -1387,135 +1387,101 @@ namespace HideoutShootout
                 return;
             }
 
-            // PORTING NOTE: tried IAssetsManager.GetAssetName(ResourceKey) here first (its
-            // parameter is named "resourceKeys", suggesting a converted format), but it returned
-            // an empty string for every entry - confirmed in-game ("reported no prefab bundle
-            // paths to preload" for every profile). .path produces real, non-empty ".bundle"-
-            // suffixed strings, but LoadBundlesAsync/LoadBundleAsync never complete with it even
-            // when manually driven - confirmed the hang isn't a coroutine-pumping issue, since
-            // MoveNext() was called directly by hand and still made no progress. DownloadingUrl/
-            // LoadingUrl point at a plain local StreamingAssets\Windows folder (not a remote CDN),
-            // where real bundle files are typically named by a content hash/id, not by their
-            // human-readable asset path - .path is very likely the wrong string entirely, and
-            // ResourceKey.rcid (untried so far) is the more likely match for whatever these files
-            // are actually named on disk. Trying rcid as the primary key this round; keeping path
-            // around only for the side-by-side diagnostic below.
             ResourceKey[] resourceKeys = profile.GetAllPrefabPaths(true).Where(key => key != null).ToArray();
-            string[] bundlePaths = resourceKeys
-                .Select(key => key.rcid)
-                .Where(rcid => !string.IsNullOrEmpty(rcid))
-                .Distinct()
-                .ToArray();
-
-            if (bundlePaths.Length == 0)
+            if (resourceKeys.Length == 0)
             {
-                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab bundle rcids to preload.");
+                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab resource keys to preload.");
                 return;
             }
 
-            Plugin.LogSource.LogInfo($"Loading {bundlePaths.Length} bundles (by rcid) for hideout bot profile {profile.Id}...");
-            IOperation operation = assetsManager.LoadBundlesAsync(bundlePaths);
-
-            // Diagnostic: Completed/Succeed/Failed never flip even after 90s of being driven via a
-            // coroutine, which points at whatever actually owns the file I/O (likely
-            // AssetsManagerClass.BundlesManager) not being active/ticking in the hideout scene.
-            // Logging the concrete operation type and the BundlesManager's live/active state once,
-            // up front, to confirm or rule that out without another guess-and-test round.
-            try
+            string SafeToAssetName(ResourceKey key)
             {
-                Plugin.LogSource.LogInfo($"LoadBundlesAsync operation concrete type: {operation.GetType().FullName}");
-                if (assetsManager is AssetsManagerClass concreteAssetsManager)
-                {
-                    BundlesManagerClass bundlesManager = concreteAssetsManager.BundlesManager;
-                    if (bundlesManager == null)
-                    {
-                        Plugin.LogSource.LogInfo("AssetsManagerClass.BundlesManager is null.");
-                    }
-                    else
-                    {
-                        // BundlesManagerClass isn't a Unity Component, so nothing ticks it
-                        // automatically via Update() - the actual file I/O is presumably kicked
-                        // off eagerly rather than polled per-frame. DownloadingUrl/LoadingUrl being
-                        // set to a real CDN address (rather than empty/local) would mean the load
-                        // is waiting on a network fetch that an offline SPT install will never
-                        // complete - which would explain an operation that just sits there forever
-                        // instead of failing loudly.
-                        Plugin.LogSource.LogInfo(
-                            $"BundlesManagerClass: DownloadingUrl='{bundlesManager.DownloadingUrl}' LoadingUrl='{bundlesManager.LoadingUrl}'");
-
-                        // Side-by-side test of both ResourceKey string candidates on the same
-                        // underlying asset, to see if rcid behaves differently from path (which has
-                        // never once completed, across several rounds, however it's driven).
-                        ResourceKey firstKey = resourceKeys.FirstOrDefault(k => !string.IsNullOrEmpty(k.rcid));
-                        if (firstKey != null)
-                        {
-                            Plugin.LogSource.LogInfo($"Sample ResourceKey: path='{firstKey.path}' rcid='{firstKey.rcid}'");
-
-                            void TrySingleLoad(string label, string bundleName)
-                            {
-                                UnityEngine.AssetBundle existing = bundlesManager.FindBundle(bundleName);
-                                Plugin.LogSource.LogInfo($"FindBundle({label}='{bundleName}') before load: {(existing == null ? "null" : existing.name)}");
-
-                                IOperation singleOp = (IOperation)bundlesManager.LoadBundleAsync(bundleName, true);
-                                for (int i = 0; i < 3 && !singleOp.Completed; i++)
-                                {
-                                    singleOp.MoveNext();
-                                    Plugin.LogSource.LogInfo($"LoadBundleAsync({label}) poll {i}: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
-                                    System.Threading.Thread.Sleep(300);
-                                }
-                                Plugin.LogSource.LogInfo($"LoadBundleAsync({label}) final: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
-                            }
-
-                            TrySingleLoad("rcid", firstKey.rcid);
-                            if (!string.IsNullOrEmpty(firstKey.path))
-                            {
-                                TrySingleLoad("path", firstKey.path);
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Plugin.LogSource.LogDebug($"LoadBundlesAsync diagnostic logging failed: {ex.Message}");
+                try { return key.ToAssetName(); }
+                catch (Exception ex) { Plugin.LogSource.LogDebug($"ResourceKey.ToAssetName() threw: {ex.Message}"); return null; }
             }
 
-            // IOperation implements IEnumerator but nothing was driving it - polling .Completed
-            // without ever calling MoveNext() left it permanently stuck at "not completed", which
-            // silently hung the whole spawn (no exception, no bot, nothing in the log) rather than
-            // failing loudly. yield-returning it from a coroutine lets Unity's own coroutine runner
-            // pump MoveNext() every frame the way any other nested IEnumerator operation is meant to
-            // run. Bridged back into this async method via a TaskCompletionSource, with a timeout so
-            // a genuinely stuck load fails loudly instead of hanging forever again.
-            TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
-            Plugin.Instance.StartCoroutine(DriveOperationCoroutine(operation, tcs));
-
-            DateTime waitStart = DateTime.UtcNow;
-            while (true)
+            // PORTING NOTE: several rounds tried one candidate string at a time (each needing its
+            // own build+in-game test to find out it didn't work) - IAssetsManager.GetAssetName
+            // (empty for every key), then .path (real ".bundle"-suffixed strings, but the operation
+            // never once completed, coroutine-driven or hand-polled - ruling out a driving bug and
+            // pointing at the string itself). Rather than keep guessing one at a time, try every
+            // remaining candidate for real against the full bundle set, in order, and commit to
+            // whichever one actually reports Succeed first - no more back-and-forth needed to find
+            // the right one. ToAssetName() is listed first since the name strongly implies it's the
+            // intended ResourceKey -> loader-string conversion; rcid second (files in a local
+            // bundle folder are typically named by a content id, not a human-readable path); path
+            // last, since it's already proven not to work.
+            (string Label, Func<ResourceKey, string> Selector)[] candidates =
             {
-                Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(2)));
-                if (completed == tcs.Task)
+                ("ToAssetName()", SafeToAssetName),
+                ("rcid", key => key.rcid),
+                ("path", key => key.path),
+            };
+
+            const double candidateTimeoutSeconds = 20;
+
+            foreach (var candidate in candidates)
+            {
+                string[] bundleNames = resourceKeys
+                    .Select(candidate.Selector)
+                    .Where(name => !string.IsNullOrEmpty(name))
+                    .Distinct()
+                    .ToArray();
+
+                if (bundleNames.Length == 0)
                 {
-                    break;
+                    Plugin.LogSource.LogInfo($"Bundle key candidate '{candidate.Label}' produced no non-empty strings - skipping.");
+                    continue;
                 }
 
-                double elapsed = (DateTime.UtcNow - waitStart).TotalSeconds;
-                Plugin.LogSource.LogInfo($"LoadBundlesAsync still waiting after {elapsed:F0}s for profile {profile.Id}: Completed={operation.Completed} Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
+                Plugin.LogSource.LogInfo($"Trying bundle key candidate '{candidate.Label}' ({bundleNames.Length} bundles, e.g. '{bundleNames[0]}') for hideout bot profile {profile.Id}...");
+                IOperation operation = assetsManager.LoadBundlesAsync(bundleNames);
 
-                if (elapsed >= 90)
+                // IOperation implements IEnumerator but nothing was driving it - polling .Completed
+                // without ever calling MoveNext() left it permanently stuck at "not completed".
+                // yield-returning it from a coroutine lets Unity's own coroutine runner pump
+                // MoveNext() every frame the way any other nested IEnumerator operation is meant to
+                // run. Bridged back into this async method via a TaskCompletionSource, with a
+                // per-candidate timeout so a genuinely stuck format doesn't block the others.
+                TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
+                Plugin.Instance.StartCoroutine(DriveOperationCoroutine(operation, tcs));
+
+                DateTime waitStart = DateTime.UtcNow;
+                bool timedOut = false;
+                while (true)
                 {
-                    Plugin.LogSource.LogWarning($"LoadBundlesAsync timed out after {elapsed:F0}s for hideout bot profile {profile.Id}; proceeding anyway.");
+                    Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+                    if (completed == tcs.Task)
+                    {
+                        break;
+                    }
+
+                    double elapsed = (DateTime.UtcNow - waitStart).TotalSeconds;
+                    Plugin.LogSource.LogInfo($"  '{candidate.Label}' still waiting after {elapsed:F0}s: Completed={operation.Completed} Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
+
+                    if (elapsed >= candidateTimeoutSeconds)
+                    {
+                        Plugin.LogSource.LogInfo($"  '{candidate.Label}' timed out after {elapsed:F0}s - trying the next candidate (its coroutine keeps running in the background in case it eventually completes).");
+                        timedOut = true;
+                        break;
+                    }
+                }
+
+                if (timedOut)
+                {
+                    continue;
+                }
+
+                if (operation.Succeed)
+                {
+                    LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' WORKED - loaded {bundleNames.Length} bundles for hideout bot profile {profile.Id}.");
                     return;
                 }
+
+                Plugin.LogSource.LogInfo($"  '{candidate.Label}' completed but did not succeed: Failed={operation.Failed} Error={operation.Error} - trying the next candidate.");
             }
 
-            if (operation.Failed)
-            {
-                Plugin.LogSource.LogWarning($"LoadBundlesAsync failed for hideout bot profile {profile.Id}: {operation.Error}");
-                return;
-            }
-
-            LogSpawnDiagnostic($"Loaded {bundlePaths.Length} bundles for hideout bot profile {profile.Id}.");
+            Plugin.LogSource.LogWarning($"Every bundle key candidate failed or timed out for hideout bot profile {profile.Id}; proceeding anyway.");
         }
 
         private static System.Collections.IEnumerator DriveOperationCoroutine(IOperation operation, TaskCompletionSource<bool> tcs)
