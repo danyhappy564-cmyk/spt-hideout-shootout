@@ -1458,28 +1458,41 @@ namespace HideoutShootout
                     Type = CharacterControllerSpawner.ControllerType.BotAISteeringImpostorWithDoors,
                 };
 
-                LocalPlayer player = await LocalPlayer.Create(
-                    gameWorld,
-                    playerId,
-                    position,
-                    Quaternion.identity,
-                    "Player",
-                    string.Empty,
-                    EPointOfView.ThirdPerson,
-                    profile,
-                    /*aiControl*/ true,
-                    EUpdateQueue.Update,
-                    Player.EUpdateMode.Auto,
-                    Player.EUpdateMode.Auto,
-                    botControllerMode,
-                    () => 1f,
-                    () => 1f,
-                    new GClass2265(),
-                    GClass1855.Default,
-                    /*session*/ null,
-                    ELocalMode.TRAINING,
-                    /*isYourPlayer*/ false,
-                    /*isBot*/ true);
+                // PORTING NOTE (SPT 4.0.13): confirmed via in-game Harmony patch diagnostics -
+                // SPT's own DisableDevMaskCheckPatch transpiler on LocalPlayer+Struct569.MoveNext
+                // (the compiler-generated state machine for this Create overload) is what causes
+                // the AsyncTaskMethodBuilder.SetResult-called-twice crash outside of a real raid.
+                // 4.1 no longer ships that patch (matching this mod's own removed hand-rolled
+                // workaround for the same historical bug), but 4.0.13 still does. Temporarily
+                // removing just that one transpiler for the duration of this call - and restoring
+                // it immediately after - avoids the crash without touching SPT's own patch for
+                // every other (real-raid) LocalPlayer.Create call.
+                LocalPlayer player;
+                using (SuppressDisableDevMaskCheckPatch())
+                {
+                    player = await LocalPlayer.Create(
+                        gameWorld,
+                        playerId,
+                        position,
+                        Quaternion.identity,
+                        "Player",
+                        string.Empty,
+                        EPointOfView.ThirdPerson,
+                        profile,
+                        /*aiControl*/ true,
+                        EUpdateQueue.Update,
+                        Player.EUpdateMode.Auto,
+                        Player.EUpdateMode.Auto,
+                        botControllerMode,
+                        () => 1f,
+                        () => 1f,
+                        new GClass2265(),
+                        GClass1855.Default,
+                        /*session*/ null,
+                        ELocalMode.TRAINING,
+                        /*isYourPlayer*/ false,
+                        /*isBot*/ true);
+                }
 
                 if (player == null)
                 {
@@ -1579,6 +1592,75 @@ namespace HideoutShootout
 
             Plugin.LogSource.LogInfo(
                 $"Harmony patch info: {label} -> prefixes=[{Owners(info.Prefixes)}] postfixes=[{Owners(info.Postfixes)}] transpilers=[{Owners(info.Transpilers)}] finalizers=[{Owners(info.Finalizers)}]");
+        }
+
+        /// <summary>
+        /// Temporarily removes SPT's DisableDevMaskCheckPatch transpiler from
+        /// <c>LocalPlayer+Struct569.MoveNext</c> (LocalPlayer.Create's async state machine on this
+        /// client) for the duration of the returned scope, restoring it on Dispose. See the porting
+        /// note at the call site for why this is necessary on SPT 4.0.13.
+        /// </summary>
+        private static IDisposable SuppressDisableDevMaskCheckPatch()
+        {
+            try
+            {
+                Type stateMachine = typeof(LocalPlayer).GetNestedType("Struct569", BindingFlags.Public | BindingFlags.NonPublic);
+                MethodInfo moveNext = stateMachine?.GetMethod("MoveNext", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (moveNext == null)
+                {
+                    return NoopDisposable.Instance;
+                }
+
+                HarmonyLib.Patches info = Harmony.GetPatchInfo(moveNext);
+                HarmonyLib.Patch devMaskPatch = info?.Transpilers.FirstOrDefault(p => p.owner == "DisableDevMaskCheckPatch");
+                if (devMaskPatch == null)
+                {
+                    return NoopDisposable.Instance;
+                }
+
+                Harmony harmony = new Harmony("com.moxopixel.hideoutshootout.devmaskworkaround");
+                harmony.Unpatch(moveNext, devMaskPatch.PatchMethod);
+                LogSpawnDiagnostic("Temporarily removed DisableDevMaskCheckPatch for LocalPlayer.Create.");
+                return new RestorePatchOnDispose(harmony, moveNext, devMaskPatch.PatchMethod);
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogDebug($"SuppressDisableDevMaskCheckPatch failed, proceeding without suppression: {ex.Message}");
+                return NoopDisposable.Instance;
+            }
+        }
+
+        private sealed class NoopDisposable : IDisposable
+        {
+            public static readonly NoopDisposable Instance = new NoopDisposable();
+            public void Dispose() { }
+        }
+
+        private sealed class RestorePatchOnDispose : IDisposable
+        {
+            private readonly Harmony _harmony;
+            private readonly MethodBase _target;
+            private readonly MethodInfo _transpiler;
+
+            public RestorePatchOnDispose(Harmony harmony, MethodBase target, MethodInfo transpiler)
+            {
+                _harmony = harmony;
+                _target = target;
+                _transpiler = transpiler;
+            }
+
+            public void Dispose()
+            {
+                try
+                {
+                    _harmony.Patch(_target, transpiler: new HarmonyMethod(_transpiler));
+                    LogSpawnDiagnostic("Restored DisableDevMaskCheckPatch on LocalPlayer.Create.");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.LogSource.LogWarning($"Failed to restore DisableDevMaskCheckPatch: {ex.Message}");
+                }
+            }
         }
 
         // PORTING NOTE (SPT 4.0.13): IBotCreator's real signature on this client build uses
