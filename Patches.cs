@@ -1408,6 +1408,36 @@ namespace HideoutShootout
             Plugin.LogSource.LogInfo($"Loading {bundlePaths.Length} bundles for hideout bot profile {profile.Id}...");
             IOperation operation = assetsManager.LoadBundlesAsync(bundlePaths);
 
+            // Diagnostic: Completed/Succeed/Failed never flip even after 90s of being driven via a
+            // coroutine, which points at whatever actually owns the file I/O (likely
+            // AssetsManagerClass.BundlesManager) not being active/ticking in the hideout scene.
+            // Logging the concrete operation type and the BundlesManager's live/active state once,
+            // up front, to confirm or rule that out without another guess-and-test round.
+            try
+            {
+                Plugin.LogSource.LogInfo($"LoadBundlesAsync operation concrete type: {operation.GetType().FullName}");
+                if (assetsManager is AssetsManagerClass concreteAssetsManager)
+                {
+                    object bundlesManager = concreteAssetsManager.BundlesManager;
+                    if (bundlesManager == null)
+                    {
+                        Plugin.LogSource.LogInfo("AssetsManagerClass.BundlesManager is null.");
+                    }
+                    else
+                    {
+                        string typeName = bundlesManager.GetType().FullName;
+                        string componentState = bundlesManager is UnityEngine.Component component
+                            ? $" gameObject='{component.gameObject.name}' activeInHierarchy={component.gameObject.activeInHierarchy} enabled={(bundlesManager as UnityEngine.Behaviour)?.enabled}"
+                            : " (not a UnityEngine.Component)";
+                        Plugin.LogSource.LogInfo($"AssetsManagerClass.BundlesManager type: {typeName}{componentState}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogDebug($"LoadBundlesAsync diagnostic logging failed: {ex.Message}");
+            }
+
             // IOperation implements IEnumerator but nothing was driving it - polling .Completed
             // without ever calling MoveNext() left it permanently stuck at "not completed", which
             // silently hung the whole spawn (no exception, no bot, nothing in the log) rather than

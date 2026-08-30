@@ -136,6 +136,19 @@ class Program
             "ThirdPersonCustomizationFilter", "DebugBotProfilesStructContainer", "GetProfileDataParams",
             "GClass682", "GClass406", "IGetProfileData", "PoolManagerClass", "LocalPlayer", "Profile",
             "BotCreationData", "BotCreationDataClass", "BotSpawner", "IBotCreator", "MovementContext",
+
+            // Round 12: LoadBundlesAsync returns a real IOperation (bundle count matches what the
+            // profile reports), and it's being driven every frame via StartCoroutine(yield return
+            // operation), but Completed/Succeed/Failed never flip even after 90s in the hideout
+            // scene. AssetsManagerClass.LoadBundlesAsync's ctor takes a BundlesManagerClass, so the
+            // actual file I/O is almost certainly owned by BundlesManagerClass, not AssetsManagerClass
+            // itself - if BundlesManagerClass is a MonoBehaviour that normally only runs/ticks during
+            // real raid loading (not in the hideout scene), that would explain an operation that's
+            // created successfully but never progresses. Dumping it plus the concrete IOperation
+            // implementors nested inside AssetsManagerClass (one of Class3515-3526 is almost
+            // certainly what LoadBundlesAsync actually returns) to find the ticking mechanism.
+            "BundlesManagerClass", "GClass730",
+            "Class3515", "Class3516", "Class3517", "Class3518", "Class3519", "Class3520", "Class3526",
         };
 
         // InGameBundles.PLAYER_BUNDLE_NAME etc. are static fields, not methods - a field-name
