@@ -1618,7 +1618,13 @@ namespace HideoutShootout
                     return NoopDisposable.Instance;
                 }
 
-                Harmony harmony = new Harmony("com.moxopixel.hideoutshootout.devmaskworkaround");
+                // Re-patching below must use a Harmony instance whose ID is the original owner
+                // string, not our own mod's ID - Harmony tags every patch's `owner` with whichever
+                // instance ID applied it, and this same method's lookup above matches by that exact
+                // owner string. Restoring under a different ID would silently break every
+                // subsequent spawn attempt's ability to find (and re-suppress) this patch, even
+                // though the patch itself is still functionally back in place.
+                Harmony harmony = new Harmony(devMaskPatch.owner);
                 harmony.Unpatch(moveNext, devMaskPatch.PatchMethod);
                 LogSpawnDiagnostic("Temporarily removed DisableDevMaskCheckPatch for LocalPlayer.Create.");
                 return new RestorePatchOnDispose(harmony, moveNext, devMaskPatch.PatchMethod);

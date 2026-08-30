@@ -107,13 +107,15 @@ class Program
         //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
-            // Round 9: two problems surfaced only by actually running the mod in the hideout.
-            // (1) Singleton<TarkovApplication> is confirmed NOT instantiated there (per in-game
-            // debug log), and the AbstractGame.BackEndSession fallback found nothing either -
-            // dumping HideoutGame itself (its real runtime type, unobfuscated per the log) to look
-            // for a session reference directly on the game object.
-            // (2) EFT.Game.Spawning.SpawnSystemFactory doesn't exist - need ISpawnSystem's
-            // implementors and whatever now creates one.
+            // Round 10: bootstrap and session lookup both now work (confirmed in-game). Current
+            // blocker: "assets/content/hands/wild/wild_body_1_firsthands.bundle is not loaded. You
+            // should load it first." - thrown from inside LocalPlayer.Create because
+            // PreloadProfileBundlesAsync now only calls RegisterPools (pool capacity), not an
+            // actual per-resource bundle load, since LoadBundlesAndCreatePools is uncallable
+            // (broken delegate parameter). Need a working bundle-load API - dumping IEasyAssets
+            // (the asset-loading abstraction threaded through every PoolManagerClass method) to
+            // find one.
+            "IEasyAssets",
             "HideoutGame", "ISpawnSystem",
             "LocalPlayerCullingHandlerClass", "GClass917",
             "BasePlayerCulling", "OfflinePlayerCulling",
@@ -193,7 +195,7 @@ class Program
 
         // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
         // its equivalent by searching every loaded type's static methods by name instead.
-        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene" };
+        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene", "LoadBundle", "LoadAsync", "IsLoaded", "EnsureLoaded", "PreloadBundle" };
         using (var msw = new StreamWriter("method_search.txt", false, Encoding.UTF8))
         {
             foreach (var needle in methodNameSearches)
