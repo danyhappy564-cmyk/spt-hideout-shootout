@@ -1394,6 +1394,19 @@ namespace HideoutShootout
                 return;
             }
 
+            // The bundle-loading candidate below (ToAssetName()) now reliably succeeds, but
+            // LocalPlayer.Create still throws "X is not loaded" for hand-rig bundles
+            // (assets/content/hands/.../*.bundle) that don't resemble the head/body prefab paths
+            // GetAllPrefabPaths(true) was observed returning. Logging every raw .path here settles
+            // whether hands bundles are even present in this set at all, or whether they need a
+            // separate source entirely.
+            string[] handRelatedPaths = resourceKeys
+                .Select(key => key.path)
+                .Where(path => !string.IsNullOrEmpty(path) && path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToArray();
+            Plugin.LogSource.LogInfo(
+                $"Profile {profile.Id}: GetAllPrefabPaths(true) returned {resourceKeys.Length} keys, {handRelatedPaths.Length} hand-related: [{string.Join(", ", handRelatedPaths)}]");
+
             string SafeToAssetName(ResourceKey key)
             {
                 try { return key.ToAssetName(); }
@@ -1432,6 +1445,19 @@ namespace HideoutShootout
                 {
                     Plugin.LogSource.LogInfo($"Bundle key candidate '{candidate.Label}' produced no non-empty strings - skipping.");
                     continue;
+                }
+
+                // If a hand-related resourceKey exists but this candidate's selector returned
+                // null/empty for it, it silently fell out of bundleNames via the Where() above -
+                // that would explain LocalPlayer.Create still failing on a hands bundle even
+                // though the batch as a whole reports Succeed.
+                int handKeysDroppedByThisCandidate = resourceKeys.Count(key =>
+                    !string.IsNullOrEmpty(key.path)
+                    && key.path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0
+                    && string.IsNullOrEmpty(candidate.Selector(key)));
+                if (handKeysDroppedByThisCandidate > 0)
+                {
+                    Plugin.LogSource.LogWarning($"Bundle key candidate '{candidate.Label}' produced an empty string for {handKeysDroppedByThisCandidate} hand-related resourceKey(s) - they were silently excluded from this load.");
                 }
 
                 Plugin.LogSource.LogInfo($"Trying bundle key candidate '{candidate.Label}' ({bundleNames.Length} bundles, e.g. '{bundleNames[0]}') for hideout bot profile {profile.Id}...");
