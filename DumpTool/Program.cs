@@ -1,10 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 
-// One-off tool: dumps type/member info from the real installed Assembly-CSharp.dll so the
+// One-off tool: dumps type/member info from the real installed EFT client assemblies so the
 // SPT 4.0.13 backport can be fixed against actual signatures instead of guesses. Not part of
 // the mod - delete this project once the backport is done.
 class Program
@@ -16,6 +17,13 @@ class Program
         string sptRoot = args.Length > 0 ? args[0] : @"E:\SPT 4.0.10";
         ManagedDir = Path.Combine(sptRoot, "EscapeFromTarkov_Data", "Managed");
 
+        if (!Directory.Exists(ManagedDir))
+        {
+            Console.WriteLine("Managed folder not found at: " + ManagedDir);
+            Console.WriteLine("Pass the SPT root as the first argument if it's not " + sptRoot);
+            return;
+        }
+
         AppDomain.CurrentDomain.AssemblyResolve += (s, e) =>
         {
             string name = new AssemblyName(e.Name).Name;
@@ -23,48 +31,73 @@ class Program
             return File.Exists(path) ? Assembly.LoadFrom(path) : null;
         };
 
-        var asmPath = Path.Combine(ManagedDir, "Assembly-CSharp.dll");
-        if (!File.Exists(asmPath))
+        // The 10 symbols that came back with zero matches when only Assembly-CSharp.dll was
+        // scanned (IEftSession, BotCreatorClient, BotProfileClient, SpawnWave, etc.) are most
+        // likely defined in a different Managed\*.dll - Unity/BSG spread the client across
+        // several assemblies. Load every one we can and pool their types together instead of
+        // guessing which specific DLL holds what.
+        var allTypes = new List<Type>();
+        var loadErrors = new List<string>();
+        foreach (string dllPath in Directory.GetFiles(ManagedDir, "*.dll"))
         {
-            Console.WriteLine("Assembly-CSharp.dll not found at: " + asmPath);
-            Console.WriteLine("Pass the SPT root as the first argument if it's not E:\\SPT 4.0.10");
-            return;
-        }
-
-        var asm = Assembly.LoadFrom(asmPath);
-
-        Type[] types;
-        try
-        {
-            types = asm.GetTypes();
-        }
-        catch (ReflectionTypeLoadException ex)
-        {
-            types = ex.Types.Where(t => t != null).ToArray();
-            using (var lw = new StreamWriter("loader_exceptions.txt", false, Encoding.UTF8))
+            string fileName = Path.GetFileNameWithoutExtension(dllPath);
+            // Skip pure engine/BCL assemblies - they cannot contain EFT/BSG gameplay types and
+            // skipping them cuts load time and noise substantially.
+            if (fileName.StartsWith("UnityEngine.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("Unity.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+                || fileName is "mscorlib" or "netstandard" or "UnityEngine")
             {
-                foreach (var le in ex.LoaderExceptions.Take(50))
-                    lw.WriteLine(le?.Message);
+                continue;
             }
-            Console.WriteLine($"Some types failed to load (see loader_exceptions.txt); continuing with {types.Length} that did.");
+
+            try
+            {
+                var asm = Assembly.LoadFrom(dllPath);
+                Type[] types;
+                try
+                {
+                    types = asm.GetTypes();
+                }
+                catch (ReflectionTypeLoadException ex)
+                {
+                    types = ex.Types.Where(t => t != null).ToArray();
+                }
+                allTypes.AddRange(types);
+            }
+            catch (Exception ex)
+            {
+                loadErrors.Add($"{fileName}: {ex.Message}");
+            }
         }
+
+        using (var errWriter = new StreamWriter("load_errors.txt", false, Encoding.UTF8))
+            foreach (var e in loadErrors)
+                errWriter.WriteLine(e);
+
+        Type[] typesArr = allTypes.Distinct().ToArray();
 
         using (var allTypesWriter = new StreamWriter("all_types.txt", false, Encoding.UTF8))
         {
-            foreach (var t in types.OrderBy(t => t.FullName))
+            foreach (var t in typesArr.OrderBy(t => t.FullName))
                 allTypesWriter.WriteLine(t.FullName);
         }
-        Console.WriteLine($"Wrote {types.Length} type names to all_types.txt");
+        Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
+        // Highest-priority unknowns first, so a crash partway through still saves the most
+        // valuable data. Already-confirmed types (BotCreationDataClass, BotSpawner, IBotCreator,
+        // MovementContext) are last since we already have those from the previous run.
         string[] targets =
         {
-            "AppEnvironment", "BotCreationData", "BotCreationDataClass", "BotCreatorClient",
-            "BotProfileClient", "BotSpawner", "DebugBotProfilesStructContainer",
-            "DumbStatisticsManager", "GetProfileDataParams", "GlobalEventDispatcher",
-            "IBotCreator", "IEftSession", "InGameBundles", "JobYieldPriority",
-            "MovementContext", "OfflinePlayerCulling", "PositionNote", "SpawnWave",
-            "ThirdPersonCustomizationFilter", "GClass682", "GClass406", "ObjectsFactory",
-            "PoolManagerClass", "LocalPlayer", "Profile",
+            "GClass682", "GClass406",
+            "IEftSession", "BotProfileClient", "BotCreatorClient", "SpawnWave",
+            "AppEnvironment", "GlobalEventDispatcher", "InGameBundles", "JobYieldPriority",
+            "DumbStatisticsManager", "OfflinePlayerCulling", "PositionNote",
+            "ThirdPersonCustomizationFilter", "DebugBotProfilesStructContainer",
+            "GetProfileDataParams", "IGetProfileData",
+            "ObjectsFactory", "PoolManagerClass", "LocalPlayer", "Profile",
+            "BotCreationData", "BotCreationDataClass", "BotSpawner", "IBotCreator", "MovementContext",
         };
 
         using (var w = new StreamWriter("dump.txt", false, Encoding.UTF8))
@@ -74,38 +107,48 @@ class Program
                 w.WriteLine("==================================================");
                 w.WriteLine("TARGET: " + name);
                 w.WriteLine("==================================================");
+                w.Flush();
 
-                var exact = types.Where(t => t.Name == name).ToList();
-                if (exact.Count == 0)
+                try
                 {
-                    w.WriteLine("  NOT FOUND by exact name. Candidates containing '" + name + "' (case-insensitive):");
-                    var candidates = types
-                        .Where(t => t.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                        .Select(t => t.FullName)
-                        .OrderBy(n => n)
-                        .Take(40)
-                        .ToList();
+                    var exact = typesArr.Where(t => t.Name == name).ToList();
+                    if (exact.Count == 0)
+                    {
+                        w.WriteLine("  NOT FOUND by exact name. Candidates containing '" + name + "' (case-insensitive):");
+                        var candidates = typesArr
+                            .Where(t => t.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+                            .Select(t => t.FullName)
+                            .OrderBy(n => n)
+                            .Take(40)
+                            .ToList();
 
-                    if (candidates.Count == 0)
-                        w.WriteLine("    (no candidates)");
+                        if (candidates.Count == 0)
+                            w.WriteLine("    (no candidates)");
+                        else
+                            foreach (var c in candidates)
+                                w.WriteLine("    " + c);
+                    }
                     else
-                        foreach (var c in candidates)
-                            w.WriteLine("    " + c);
+                    {
+                        foreach (var t in exact)
+                            DumpType(w, t, typesArr);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    foreach (var t in exact)
-                        DumpType(w, t);
+                    w.WriteLine("  ERROR while dumping this target: " + ex);
                 }
 
                 w.WriteLine();
+                w.Flush();
             }
         }
 
         Console.WriteLine("Wrote dump.txt");
+        Console.WriteLine("DONE");
     }
 
-    static void DumpType(StreamWriter w, Type t)
+    static void DumpType(StreamWriter w, Type t, Type[] allTypes)
     {
         w.WriteLine("  FullName: " + t.FullName);
         w.WriteLine("  Kind: " + (t.IsInterface ? "interface"
@@ -116,9 +159,13 @@ class Program
             : "class"));
         w.WriteLine("  BaseType: " + t.BaseType);
 
-        var ifaces = t.GetInterfaces();
-        if (ifaces.Length > 0)
-            w.WriteLine("  Implements: " + string.Join(", ", ifaces.Select(i => i.FullName)));
+        try
+        {
+            var ifaces = t.GetInterfaces();
+            if (ifaces.Length > 0)
+                w.WriteLine("  Implements: " + string.Join(", ", ifaces.Select(i => i.FullName)));
+        }
+        catch (Exception ex) { w.WriteLine("  Implements: <error: " + ex.Message + ">"); }
 
         if (t.IsEnum)
         {
@@ -126,24 +173,40 @@ class Program
             return;
         }
 
+        // If this is an interface, also list every loaded type that implements it - useful for
+        // finding the concrete class behind an interface-typed parameter (e.g. IGetProfileData).
+        if (t.IsInterface)
+        {
+            try
+            {
+                var implementors = allTypes.Where(c => !c.IsInterface && t.IsAssignableFrom(c)).Select(c => c.FullName).OrderBy(n => n).Take(20).ToList();
+                if (implementors.Count > 0)
+                    w.WriteLine("  Implementors: " + string.Join(", ", implementors));
+            }
+            catch (Exception ex) { w.WriteLine("  Implementors: <error: " + ex.Message + ">"); }
+        }
+
         const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
             | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
-        foreach (var c in t.GetConstructors(flags))
-            w.WriteLine("  ctor: " + FormatMethod(c));
+        TryEach(w, "ctor", () => t.GetConstructors(flags).Select(c => FormatMethod(c)));
+        TryEach(w, "method", () => t.GetMethods(flags).Where(m => !m.IsSpecialName).Select(m => FormatMethod(m)));
+        TryEach(w, "prop", () => t.GetProperties(flags).Select(p => p.PropertyType + " " + p.Name));
+        TryEach(w, "field", () => t.GetFields(flags).Select(f => f.FieldType + " " + f.Name));
+        TryEach(w, "nested", () => t.GetNestedTypes(flags).Select(nt => nt.FullName + (nt.IsEnum ? " [enum: " + string.Join(",", Enum.GetNames(nt)) + "]" : "")));
+    }
 
-        foreach (var m in t.GetMethods(flags).Where(m => !m.IsSpecialName))
-            w.WriteLine("  method: " + FormatMethod(m));
-
-        foreach (var p in t.GetProperties(flags))
-            w.WriteLine("  prop: " + p.PropertyType + " " + p.Name);
-
-        foreach (var f in t.GetFields(flags))
-            w.WriteLine("  field: " + f.FieldType + " " + f.Name);
-
-        foreach (var nt in t.GetNestedTypes(flags))
-            w.WriteLine("  nested: " + nt.FullName
-                + (nt.IsEnum ? " [enum: " + string.Join(",", Enum.GetNames(nt)) + "]" : ""));
+    static void TryEach(StreamWriter w, string label, Func<IEnumerable<string>> getLines)
+    {
+        try
+        {
+            foreach (var line in getLines())
+                w.WriteLine("  " + label + ": " + line);
+        }
+        catch (Exception ex)
+        {
+            w.WriteLine("  " + label + ": <error: " + ex.Message + ">");
+        }
     }
 
     static string FormatMethod(MethodBase m)

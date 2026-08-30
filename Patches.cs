@@ -205,10 +205,12 @@ namespace HideoutShootout
                     return false;
                 }
 
-                IBotCreator botCreator = spawner._botCreator;
+                // PORTING NOTE (SPT 4.0.13): this field is public here (BotSpawner.BotCreator),
+                // not the private _botCreator this mod's SPT 4.1 target reflects into.
+                IBotCreator botCreator = spawner.BotCreator;
                 if (botCreator == null)
                 {
-                    Plugin.LogSource.LogDebug("Direct hideout spawn skipped: BotSpawner._botCreator is null.");
+                    Plugin.LogSource.LogDebug("Direct hideout spawn skipped: BotSpawner.BotCreator is null.");
                     return false;
                 }
 
@@ -230,7 +232,7 @@ namespace HideoutShootout
                     IBotCreator realCreator = EnsureRealBotCreator(spawner);
                     if (realCreator != null)
                     {
-                        spawner._botCreator = realCreator;
+                        spawner.BotCreator = realCreator;
                         botCreator = realCreator;
                         LogSpawnDiagnostic("Swapped NoopBotCreator for real BotCreatorClient on BotSpawner.");
                     }
@@ -254,10 +256,10 @@ namespace HideoutShootout
                 // for the ITokenGetter token NREs before any work runs. BotSpawner itself
                 // implements ITokenGetter and exposes its own CancellationToken, mirroring how the
                 // raid wave system passes the spawner as the token source.
-                BotCreationData creationData = await BotCreationData.Create(profileData, botCreator, 1, spawner);
+                BotCreationDataClass creationData = await BotCreationDataClass.Create(profileData, botCreator, 1, spawner);
                 if (creationData == null || creationData.Count == 0)
                 {
-                    Plugin.LogSource.LogWarning("Direct hideout spawn aborted: BotCreationData.Create yielded no profiles.");
+                    Plugin.LogSource.LogWarning("Direct hideout spawn aborted: BotCreationDataClass.Create yielded no profiles.");
                     return false;
                 }
 
@@ -1498,28 +1500,34 @@ namespace HideoutShootout
                 $"Harmony patch info: {label} -> prefixes=[{Owners(info.Prefixes)}] postfixes=[{Owners(info.Postfixes)}] transpilers=[{Owners(info.Transpilers)}] finalizers=[{Owners(info.Finalizers)}]");
         }
 
+        // PORTING NOTE (SPT 4.0.13): IBotCreator's real signature on this client build uses
+        // BotCreationDataClass (this mod's original SPT 4.1 target called it BotCreationData) and
+        // two still-obfuscated parameter types - GClass682 for the position/spawn-note argument
+        // and GClass406 for the backup-profiles cache argument. Confirmed by reflecting the
+        // installed Assembly-CSharp.dll's IBotCreator interface directly; every member below is a
+        // no-op regardless, so the exact identity of GClass682/GClass406 doesn't matter here.
         private sealed class NoopBotCreator : IBotCreator
         {
             public int BotsLoading => 0;
             public bool StartProfilesLoaded => true;
             public int BundlesLoading => 0;
 
-            public Task<Profile> GenerateProfile(BotCreationData data, System.Threading.CancellationToken cancellationToken, bool withDelete)
+            public Task<Profile> GenerateProfile(BotCreationDataClass data, System.Threading.CancellationToken cancellationToken, bool withDelete)
             {
                 return Task.FromResult<Profile>(null);
             }
 
-            public Task ActivateBot(BotCreationData data, BotZone zone, bool shallBeGroup, Func<BotOwner, BotZone, BotsGroup> groupAction, Action<BotOwner> callback, System.Threading.CancellationToken cancellationToken)
+            public Task ActivateBot(BotCreationDataClass data, BotZone zone, bool shallBeGroup, Func<BotOwner, BotZone, BotsGroup> groupAction, Action<BotOwner> callback, System.Threading.CancellationToken cancellationToken)
             {
                 return Task.CompletedTask;
             }
 
-            public Task ActivateBot(Profile profile, PositionNote position, BotZone zone, bool shallBeGroup, Func<BotOwner, BotZone, BotsGroup> groupAction, Action<BotOwner> callback, System.Threading.CancellationToken cancellationToken)
+            public Task ActivateBot(Profile profile, GClass682 position, BotZone zone, bool shallBeGroup, Func<BotOwner, BotZone, BotsGroup> groupAction, Action<BotOwner> callback, System.Threading.CancellationToken cancellationToken)
             {
                 return Task.CompletedTask;
             }
 
-            public void FillBackupProfilesData(DebugBotProfilesStructContainer resultCache)
+            public void FillBackupProfilesData(GClass406 resultCache)
             {
             }
 
