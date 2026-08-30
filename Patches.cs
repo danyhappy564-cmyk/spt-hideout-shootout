@@ -1276,11 +1276,14 @@ namespace HideoutShootout
         }
 
         // PORTING NOTE (SPT 4.0.13): ClientAppUtils doesn't exist under that name anywhere in this
-        // client - it's an SPT convenience wrapper that was introduced later. TarkovApplication
-        // (EFT.TarkovApplication : CommonClientApplication<ISession>, inheriting
-        // ClientApplication<ISession>.GetClientBackEndSession()) is the concrete MonoBehaviour
-        // singleton underneath it, and Singleton<T> (Comfort.Common) is the standard accessor this
-        // same codebase already uses for GameWorld/IBotGame - the same pattern applies here.
+        // client. Singleton<TarkovApplication> is confirmed NOT instantiated while in the hideout
+        // (per in-game debug log), so that path is a dead end here specifically. HideoutGame's own
+        // factory method (smethod_6) and its LocalPlayer-creation dispatcher (vmethod_3) both take
+        // an ISession parameter directly, confirming the game object DOES carry a session
+        // internally - but no member named "BackEndSession" exists anywhere in its type hierarchy,
+        // so it must be stored under an obfuscated field/property name. Searching by TYPE instead
+        // of by name (TryResolveMemberByTypeDeep, already used elsewhere in this file for the same
+        // kind of problem) finds it regardless of what it's actually called.
         /// <summary>
         /// Resolves <see cref="ISession"/>. The session backs profile generation requests from
         /// <see cref="BotsPresets.CreateProfile"/>.
@@ -1289,11 +1292,7 @@ namespace HideoutShootout
         {
             try
             {
-                if (!Singleton<TarkovApplication>.Instantiated)
-                {
-                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication> is not instantiated.");
-                }
-                else
+                if (Singleton<TarkovApplication>.Instantiated)
                 {
                     ISession session = Singleton<TarkovApplication>.Instance.GetClientBackEndSession();
                     if (session != null)
@@ -1302,19 +1301,19 @@ namespace HideoutShootout
                     }
                     Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication>.GetClientBackEndSession() returned null.");
                 }
-
-                // Fallback: AbstractGame (already resolved successfully elsewhere in the hideout
-                // spawn pipeline via Singleton<AbstractGame>.Instance) or its runtime type may expose
-                // the session directly under the name BackEndSession, per EFT.NetworkGame`1 and
-                // Interface13's get_BackEndSession() found by name search - not confirmed to apply
-                // to HideoutGame specifically, hence the fallback rather than the primary path.
-                if (Singleton<AbstractGame>.Instantiated
-                    && GetMemberValue(Singleton<AbstractGame>.Instance, "BackEndSession") is ISession fromGame)
+                else
                 {
-                    LogSpawnDiagnostic("TryGetBackEndSession: resolved via AbstractGame.BackEndSession fallback.");
+                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication> is not instantiated.");
+                }
+
+                if (Singleton<AbstractGame>.Instantiated
+                    && TryResolveMemberByTypeDeep(Singleton<AbstractGame>.Instance, typeof(ISession), 2) is ISession fromGame)
+                {
+                    LogSpawnDiagnostic("TryGetBackEndSession: resolved via AbstractGame member search by type.");
                     return fromGame;
                 }
 
+                Plugin.LogSource.LogDebug("TryGetBackEndSession: no ISession found on AbstractGame either.");
                 return null;
             }
             catch (Exception ex)
@@ -1587,12 +1586,16 @@ namespace HideoutShootout
         {
             try
             {
-                Type creatorType = spawnSystemType.Assembly.GetType("EFT.Game.Spawning.SpawnSystemFactory")
-                    ?? AccessTools.TypeByName("EFT.Game.Spawning.SpawnSystemFactory");
+                // PORTING NOTE (SPT 4.0.13): EFT.Game.Spawning.SpawnSystemFactory (this mod's SPT
+                // 4.1 target) is SpawnSystemCreatorClass here - confirmed via method-name search,
+                // it has three CreateSpawnSystem overloads (3/4/5 params); the 3-param one below
+                // matches (IPlayersCollection, IZones, ISpawnPoints) exactly.
+                Type creatorType = spawnSystemType.Assembly.GetType("SpawnSystemCreatorClass")
+                    ?? AccessTools.TypeByName("SpawnSystemCreatorClass");
 
                 if (creatorType == null)
                 {
-                    Plugin.LogSource.LogDebug("EFT.Game.Spawning.SpawnSystemFactory type was not found.");
+                    Plugin.LogSource.LogDebug("SpawnSystemCreatorClass type was not found.");
                     return null;
                 }
 
@@ -1633,14 +1636,14 @@ namespace HideoutShootout
                 object created = createMethod.Invoke(null, args);
                 if (created != null)
                 {
-                    LogSpawnDiagnostic($"Created ISpawnSystem via EFT.Game.Spawning.SpawnSystemFactory with args: {args[0].GetType().Name}, {args[1].GetType().Name}, {args[2].GetType().Name}");
+                    LogSpawnDiagnostic($"Created ISpawnSystem via SpawnSystemCreatorClass with args: {args[0].GetType().Name}, {args[1].GetType().Name}, {args[2].GetType().Name}");
                 }
 
                 return created;
             }
             catch (Exception ex)
             {
-                Plugin.LogSource.LogWarning($"Failed to create spawn system via EFT.Game.Spawning.SpawnSystemFactory: {ex.Message}");
+                Plugin.LogSource.LogWarning($"Failed to create spawn system via SpawnSystemCreatorClass: {ex.Message}");
                 return null;
             }
         }
@@ -1649,33 +1652,37 @@ namespace HideoutShootout
         {
             try
             {
-                Type managerType = spawnPointsType.Assembly.GetType("EFT.Game.Spawning.SpawnPointsCollection")
-                    ?? AccessTools.TypeByName("EFT.Game.Spawning.SpawnPointsCollection");
+                // PORTING NOTE (SPT 4.0.13): EFT.Game.Spawning.SpawnPointsCollection (this mod's SPT
+                // 4.1 target) is SpawnPointManagerClass here - confirmed via method-name search,
+                // CreateFromScene(DateTime?, SpawnPointParams[]) takes the same two nullable
+                // arguments this call already passes as null.
+                Type managerType = spawnPointsType.Assembly.GetType("SpawnPointManagerClass")
+                    ?? AccessTools.TypeByName("SpawnPointManagerClass");
 
                 if (managerType == null)
                 {
-                    Plugin.LogSource.LogDebug("EFT.Game.Spawning.SpawnPointsCollection type was not found.");
+                    Plugin.LogSource.LogDebug("SpawnPointManagerClass type was not found.");
                     return null;
                 }
 
                 MethodInfo createFromScene = managerType.GetMethod("CreateFromScene", BindingFlags.Public | BindingFlags.Static);
                 if (createFromScene == null)
                 {
-                    Plugin.LogSource.LogDebug("EFT.Game.Spawning.SpawnPointsCollection.CreateFromScene was not found.");
+                    Plugin.LogSource.LogDebug("SpawnPointManagerClass.CreateFromScene was not found.");
                     return null;
                 }
 
                 object created = createFromScene.Invoke(null, new object[] { null, null });
                 if (created != null)
                 {
-                    LogSpawnDiagnostic($"Created ISpawnPoints via EFT.Game.Spawning.SpawnPointsCollection.CreateFromScene: {created.GetType().Name}");
+                    LogSpawnDiagnostic($"Created ISpawnPoints via SpawnPointManagerClass.CreateFromScene: {created.GetType().Name}");
                 }
 
                 return created;
             }
             catch (Exception ex)
             {
-                Plugin.LogSource.LogWarning($"Failed to create ISpawnPoints via EFT.Game.Spawning.SpawnPointsCollection: {ex.Message}");
+                Plugin.LogSource.LogWarning($"Failed to create ISpawnPoints via SpawnPointManagerClass: {ex.Message}");
                 return null;
             }
         }
