@@ -327,30 +327,24 @@ namespace HideoutShootout
 
         /// <summary>
         /// Ensures the runtime singletons that the bot spawn pipeline assumes are present in raid
-        /// are also present in hideout. Currently only <see cref="GlobalEventDispatcher"/> is required:
-        /// the <see cref="BotCreationData"/> instance constructor unconditionally dereferences
-        /// <c>Singleton&lt;GlobalEventDispatcher&gt;.Instance</c> to subscribe its <c>StopSpawn</c> handler
-        /// to <c>OnStopBotSpawn</c>. In hideout, <c>BaseLocalGame</c> never runs, so the singleton
-        /// is null and any call to <see cref="BotCreationData.Create"/> throws an
-        /// NRE deep inside its async state machine. Mirroring the canonical
-        /// <c>if (!Singleton&lt;GlobalEventDispatcher&gt;.Instantiated) Singleton&lt;GlobalEventDispatcher&gt;.Create(new GlobalEventDispatcher())</c>
-        /// pattern from <c>BaseLocalGame</c> avoids that crash.
+        /// are also present in hideout. On this mod's original SPT 4.1 target, the
+        /// <c>BotCreationData</c> constructor unconditionally dereferenced
+        /// <c>Singleton&lt;GlobalEventDispatcher&gt;.Instance</c> to subscribe its <c>StopSpawn</c>
+        /// handler to <c>OnStopBotSpawn</c>; since hideout never runs <c>BaseLocalGame</c>, that
+        /// singleton was never created and the constructor NRE'd, so this pre-created it.
         /// </summary>
+        /// <remarks>
+        /// PORTING NOTE (SPT 4.0.13, still open): <c>GlobalEventDispatcher</c> doesn't exist under
+        /// that name, or any name containing "EventDispatcher", anywhere in this client - it was
+        /// likely renamed to a fully obfuscated GClassNNNN with no naming hint, which isn't
+        /// findable by name search. <c>BotCreationDataClass</c>'s constructor here is simpler
+        /// (just <c>IGetProfileData</c>) so it may not have the same dependency at all; left as a
+        /// no-op rather than guessing. If a hideout bot spawn throws a NullReferenceException deep
+        /// inside <c>BotCreationDataClass.Create</c>'s async state machine, the exception's stack
+        /// trace will name the exact singleton type that needs pre-creating here.
+        /// </remarks>
         private static void EnsureHideoutSpawnSingletons()
         {
-            try
-            {
-                if (!Singleton<GlobalEventDispatcher>.Instantiated)
-                {
-                    Singleton<GlobalEventDispatcher>.Create(new GlobalEventDispatcher());
-                    LogSpawnDiagnostic("Created Singleton<GlobalEventDispatcher> for hideout spawn pipeline.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Plugin.LogSource.LogWarning($"Failed to create Singleton<GlobalEventDispatcher> in hideout: {ex.Message}");
-                Plugin.LogSource.LogDebug(ex.ToString());
-            }
         }
 
         private static BotsController FindBotsController(object game)
@@ -1415,12 +1409,17 @@ namespace HideoutShootout
                 // Mirrors BotSpawner.SpawnAndActivateNowDebugClient, the game's own debug spawn path.
                 await PreloadProfileBundlesAsync(profile);
 
-                // PORTING NOTE (SPT 4.0.13, still open): LocalPlayer.Create's own 21-argument
-                // signature is confirmed identical on this client, but three of the concrete types
-                // this mod passes for it don't exist here - AppEnvironment (for the
-                // CharacterControllerSpawner.Mode value), DumbStatisticsManager (an
-                // IStatisticsManager) and ThirdPersonCustomizationFilter (an IViewFilter). This call
-                // will not compile as-is on 4.0.13 until those are replaced.
+                // PORTING NOTE (SPT 4.0.13): LocalPlayer.Create's own 21-argument signature is
+                // confirmed identical on this client. Confirmed replacements: GClass2265 is a
+                // parameterless, dependency-free IStatisticsManager - the same shape
+                // DumbStatisticsManager had. GClass1855/GClass1856 are the two concrete IViewFilter
+                // implementations with a static Default instance; which one is the "third person"
+                // filter isn't confirmed (both are equally-shaped siblings of abstract GClass1854) -
+                // GClass1855 is a guess, verify visually in-game (bot's body customization should
+                // render normally in third person; if not, try GClass1856.Default instead).
+                // Still open: AppEnvironment.Config.CharacterController.BotPlayerMode's replacement -
+                // CharacterControllerSpawner.Mode is a config type here, not an enum, so this needs
+                // either an existing preset instance or building one from Mode's own fields.
                 LocalPlayer player = await LocalPlayer.Create(
                     gameWorld,
                     playerId,
@@ -1437,8 +1436,8 @@ namespace HideoutShootout
                     AppEnvironment.Config.CharacterController.BotPlayerMode,
                     () => 1f,
                     () => 1f,
-                    new DumbStatisticsManager(),
-                    ThirdPersonCustomizationFilter.Default,
+                    new GClass2265(),
+                    GClass1855.Default,
                     /*session*/ null,
                     ELocalMode.TRAINING,
                     /*isYourPlayer*/ false,

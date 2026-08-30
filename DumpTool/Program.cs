@@ -270,6 +270,45 @@ class Program
             }
         }
 
+        // CharacterControllerSpawner.Mode is a nested config type, not an enum - Type.Name for it
+        // is just "Mode" (too common a word to search by name alone), so match by full name
+        // instead. Also look for any existing static field/property already typed as it, in case
+        // a ready-made "bot mode" preset exists somewhere (the way AppEnvironment.Config.
+        // CharacterController.BotPlayerMode worked on this mod's SPT 4.1 target).
+        using (var w2 = new StreamWriter("dump.txt", true, Encoding.UTF8))
+        {
+            w2.WriteLine("==================================================");
+            w2.WriteLine("TARGET: CharacterControllerSpawner+Mode (by FullName)");
+            w2.WriteLine("==================================================");
+
+            Type modeType = typesArr.FirstOrDefault(t => t.FullName == "CharacterControllerSpawner+Mode");
+            if (modeType == null)
+            {
+                w2.WriteLine("  NOT FOUND by exact FullName.");
+            }
+            else
+            {
+                DumpType(w2, modeType, typesArr);
+
+                w2.WriteLine("  --- static members anywhere typed as this Mode ---");
+                foreach (var t in typesArr)
+                {
+                    try
+                    {
+                        foreach (var p in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                            if (p.PropertyType == modeType)
+                                w2.WriteLine("  prop: " + t.FullName + "." + p.Name);
+
+                        foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                            if (f.FieldType == modeType)
+                                w2.WriteLine("  field: " + t.FullName + "." + f.Name);
+                    }
+                    catch { }
+                }
+            }
+            w2.WriteLine();
+        }
+
         Console.WriteLine("Wrote dump.txt");
         Console.WriteLine("DONE");
     }
