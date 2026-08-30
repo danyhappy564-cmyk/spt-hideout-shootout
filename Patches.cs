@@ -1623,6 +1623,31 @@ namespace HideoutShootout
                 // Mirrors BotSpawner.SpawnAndActivateNowDebugClient, the game's own debug spawn path.
                 await PreloadProfileBundlesAsync(profile);
 
+                // PORTING NOTE (SPT 4.0.13): confirmed via a real crash stack trace and extensive
+                // in-game testing - EFT.PlayerBody::Init throws "X is not loaded. You should load it
+                // first." for the profile's hands-rig bundle (assets/content/hands/*.bundle),
+                // reliably, regardless of which bundle-loading API is used beforehand (bulk
+                // LoadBundlesAsync, per-key LoadAssetAsync, or the synchronous GClass1857.GetAsset -
+                // all three either never complete or throw the identical exception for this specific
+                // category). A real raid apparently preloads every possible customization variant as
+                // part of its own loading screen, which the hideout has no equivalent of - the
+                // resulting mismatch reliably reproduced even after warming up with a real raid in
+                // the same session. Profile.Customization (GClass2197 : Dictionary<EBodyModelPart,
+                // MongoID>) is what PlayerBody.Init reads to decide which body parts to render -
+                // removing the Hands entry here means it never attempts to load/render hands at all
+                // for this bot, trading a bare/default-handed look for a bot that actually spawns.
+                try
+                {
+                    if (profile.Customization != null && profile.Customization.Remove(EBodyModelPart.Hands))
+                    {
+                        LogSpawnDiagnostic($"Removed EBodyModelPart.Hands from profile {profile.Id}'s customization to avoid the unloadable hand-rig bundle.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.LogSource.LogDebug($"Could not strip EBodyModelPart.Hands from profile {profile.Id}'s customization: {ex.Message}");
+                }
+
                 // PORTING NOTE (SPT 4.0.13): LocalPlayer.Create's own 21-argument signature is
                 // confirmed identical on this client. Confirmed replacements: GClass2265 is a
                 // parameterless, dependency-free IStatisticsManager - the same shape
