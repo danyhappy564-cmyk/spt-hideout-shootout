@@ -695,8 +695,8 @@ namespace HideoutShootout
         /// Turns off EFT's offline player culling for the bot so its body is actually drawn.
         /// <para>
         /// The bot's body meshes are enabled, correctly bounded, on a rendered layer and have valid
-        /// materials, yet are never drawn - because <c>LocalPlayer.botPlayerCulling</c>
-        /// (an <see cref="OfflinePlayerCulling"/>) sets <c>Renderer.forceRenderingOff = true</c> on
+        /// materials, yet are never drawn - because <c>LocalPlayer.localPlayerCullingHandlerClass</c>
+        /// (a <see cref="LocalPlayerCullingHandlerClass"/>) sets <c>Renderer.forceRenderingOff = true</c> on
         /// them. That flag skips rendering while leaving <c>enabled</c> true, which is why every other
         /// measurement looked healthy. It applies only to <c>PlayerBody.GetRenderersNonAlloc</c>, so
         /// equipment keeps rendering - exactly the "gear but no body" symptom.
@@ -717,10 +717,15 @@ namespace HideoutShootout
 
             try
             {
-                // LocalPlayer.botPlayerCulling is private; GetMemberValue walks the hierarchy for us.
-                if (!(GetMemberValue(botPlayer, "botPlayerCulling") is OfflinePlayerCulling culling))
+                // PORTING NOTE (SPT 4.0.13): the field is named localPlayerCullingHandlerClass here
+                // (this mod's SPT 4.1 target called it botPlayerCulling), and its type is
+                // LocalPlayerCullingHandlerClass - confirmed to inherit Disable()/ApplyVisibleState()/
+                // Mode/IsVisible from its base GClass917, an exact match for OfflinePlayerCulling's
+                // members. LocalPlayer.botPlayerCulling is private; GetMemberValue walks the
+                // hierarchy for us.
+                if (!(GetMemberValue(botPlayer, "localPlayerCullingHandlerClass") is LocalPlayerCullingHandlerClass culling))
                 {
-                    Plugin.LogSource.LogWarning("Could not resolve LocalPlayer.botPlayerCulling; bot body may stay invisible.");
+                    Plugin.LogSource.LogWarning("Could not resolve LocalPlayer.localPlayerCullingHandlerClass; bot body may stay invisible.");
                     return;
                 }
 
