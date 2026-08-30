@@ -2850,4 +2850,94 @@ namespace HideoutShootout
         }
     }
 
+    /// <summary>
+    /// Diagnostic-only (adds no behavior of its own): logs why HollywoodFX's own
+    /// <c>HollywoodFX.Patches.PlayerOnDeadPostfixPatch</c> (which spawns the death "finisher"
+    /// blood splash) is or isn't finding what it needs for the hideout-spawned bot. Confirmed the
+    /// gore effects system itself initializes fine now (its bundle-loaded prefabs and collision
+    /// handlers start up normally), but wall/environment impacts work while body/death gore does
+    /// not - this coexists as an independent postfix on <c>Player.OnDead</c> alongside
+    /// HollywoodFX's own, without altering its behavior, to see exactly which of its guard clauses
+    /// (no <c>PlayerDamageRegistry</c> entry / null <c>HitCollider</c> / null
+    /// <c>attachedRigidbody</c>) is bailing out for this bot.
+    /// </summary>
+    internal class Patch_HollywoodFX_GoreDiagnostics : ModulePatch
+    {
+        private static Type _playerDamageRegistryType;
+
+        public static void TryEnable()
+        {
+            try
+            {
+                _playerDamageRegistryType = AccessTools.TypeByName("HollywoodFX.Gore.PlayerDamageRegistry");
+                if (_playerDamageRegistryType == null)
+                {
+                    Plugin.LogSource.LogDebug("HollywoodFX gore diagnostics skipped: PlayerDamageRegistry type not found (HollywoodFX not installed?).");
+                    return;
+                }
+
+                new Patch_HollywoodFX_GoreDiagnostics().Enable();
+                Plugin.LogSource.LogInfo("Hooked EFT.Player.OnDead for HollywoodFX gore diagnostics.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"Failed to enable HollywoodFX gore diagnostics: {ex.Message}");
+            }
+        }
+
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.Method(typeof(Player), nameof(Player.OnDead));
+        }
+
+        [PatchPostfix]
+        private static void Postfix(Player __instance)
+        {
+            try
+            {
+                if (__instance == null || __instance.gameObject == null)
+                {
+                    return;
+                }
+
+                int instanceId = __instance.gameObject.transform.GetInstanceID();
+
+                Type singletonType = typeof(Singleton<>).MakeGenericType(_playerDamageRegistryType);
+                object registryInstance = singletonType
+                    .GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)
+                    ?.GetValue(null);
+
+                if (registryInstance == null)
+                {
+                    Plugin.LogSource.LogInfo($"HollywoodFX gore diagnostics: PlayerDamageRegistry singleton not instantiated for '{__instance.name}'.");
+                    return;
+                }
+
+                MethodInfo tryGetValue = _playerDamageRegistryType.GetMethod("TryGetValue");
+                object[] args = { instanceId, null };
+                bool found = tryGetValue != null && (bool)tryGetValue.Invoke(registryInstance, args);
+
+                if (!found)
+                {
+                    Plugin.LogSource.LogInfo($"HollywoodFX gore diagnostics: no PlayerDamageRegistry entry for '{__instance.name}' (instanceId={instanceId}) - RegisterDamage never fired for this hit (or a different transform root was used as the key).");
+                    return;
+                }
+
+                object damage = args[1];
+                Type damageType = damage.GetType();
+                Collider hitCollider = damageType.GetField("HitCollider")?.GetValue(damage) as Collider;
+                Rigidbody rigidbody = hitCollider?.attachedRigidbody;
+
+                Plugin.LogSource.LogInfo(
+                    $"HollywoodFX gore diagnostics for '{__instance.name}': registry entry found, " +
+                    $"HitCollider={(hitCollider == null ? "null" : hitCollider.name)}, " +
+                    $"attachedRigidbody={(rigidbody == null ? "null" : rigidbody.name)}");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"HollywoodFX gore diagnostics postfix failed: {ex.Message}");
+            }
+        }
+    }
+
 }
