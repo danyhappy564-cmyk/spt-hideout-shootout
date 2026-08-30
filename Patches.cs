@@ -1501,7 +1501,14 @@ namespace HideoutShootout
                 if (operation.Succeed)
                 {
                     LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' WORKED - loaded {bundleNames.Length} bundles for hideout bot profile {profile.Id}.");
-                    await EnsureHandRigBundlesLoadedAsync(assetsManager, resourceKeys, profile.Id);
+
+                    // PORTING NOTE: confirmed in-game this pass can take longer than 15s per key
+                    // (still "pending" at that point every time so far) - awaiting it here was
+                    // adding a guaranteed multi-second stall to every single spawn attempt for a
+                    // benefit that's never actually been observed to land in time. Fire-and-forget
+                    // it instead: LocalPlayer.Create proceeds immediately, and if this eventually
+                    // does complete in the background, it's there for whichever attempt comes next.
+                    _ = EnsureHandRigBundlesLoadedAsync(assetsManager, resourceKeys, profile.Id);
                     return;
                 }
 
@@ -1710,9 +1717,15 @@ namespace HideoutShootout
                 // just never gets its AI/behavior wired up because this exception aborts before a
                 // LocalPlayer reference is returned to the caller). Recover it by identity instead of
                 // treating the fault as a hard failure.
-                if (inner is InvalidOperationException invalidOp
-                    && invalidOp.Message.Contains("final state")
-                    && Singleton<GameWorld>.Instantiated)
+                //
+                // PORTING NOTE: also try this same identity recovery for ANY exception now (not just
+                // the double-completion one) - specifically to cover the "X is not loaded" fault a
+                // missing hand-rig bundle throws. It's unconfirmed whether LocalPlayer actually gets
+                // far enough to register in GameWorld before that particular fault (unlike the
+                // double-completion bug, which happens at the very end of Create), but attempting the
+                // lookup regardless of exception type costs nothing when it comes up empty, and turns
+                // a hard failure into a working (if visually imperfect) bot when it doesn't.
+                if (Singleton<GameWorld>.Instantiated)
                 {
                     LocalPlayer recovered = Singleton<GameWorld>.Instance.AllAlivePlayersList
                         .OfType<LocalPlayer>()
@@ -1720,11 +1733,11 @@ namespace HideoutShootout
 
                     if (recovered != null)
                     {
-                        LogSpawnDiagnostic($"Recovered LocalPlayer for hideout bot profile {profile.Id} despite SetResult double-completion fault.");
+                        LogSpawnDiagnostic($"Recovered LocalPlayer for hideout bot profile {profile.Id} despite {inner.GetType().Name} fault.");
                         return recovered;
                     }
 
-                    Plugin.LogSource.LogWarning($"LocalPlayer.Create faulted with the known double-completion bug and no matching player was found in GameWorld for profile {profile.Id}.");
+                    Plugin.LogSource.LogWarning($"LocalPlayer.Create faulted ({inner.GetType().Name}) and no matching player was found in GameWorld for profile {profile.Id}.");
                 }
 
                 throw;
