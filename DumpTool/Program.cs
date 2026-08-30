@@ -149,6 +149,21 @@ class Program
             // certainly what LoadBundlesAsync actually returns) to find the ticking mechanism.
             "BundlesManagerClass", "GClass730",
             "Class3515", "Class3516", "Class3517", "Class3518", "Class3519", "Class3520", "Class3526",
+
+            // Round 14: confirmed in-game, repeatedly - AssetsManagerClass.LoadBundlesAsync
+            // (ToAssetName() candidate) reliably succeeds for head/body prefabs but never makes
+            // hand-rig bundles (assets/content/hands/*.skin.bundle) available in time - neither the
+            // bulk call nor a per-key LoadAssetAsync(ResourceKey) (which took over 15s per key and
+            // never completed) gets there before LocalPlayer.Create's own internal check throws "X
+            // is not loaded". A method-name search turned up GClass1857.LoadBundles(DependencyGraphClass
+            // +GClass1661[IEasyBundle][]) -> Task, a completely different, dependency-graph-based
+            // loading API that IEasyAssets.System (a DependencyGraphClass<IEasyBundle>) feeds into -
+            // this looks like the real mechanism the game itself uses for exactly this kind of
+            // per-asset load, as opposed to the coarser bundle-file-level APIs tried so far. Need the
+            // full shape of all of these to actually call it: how to get a GClass1661<IEasyBundle>
+            // from a ResourceKey, and DependencyGraphClass's own members.
+            "GClass1857", "IEasyAssets", "IEasyBundle", "EasyAssets",
+            "DependencyGraphClass`1", "GClass1661`1",
         };
 
         // InGameBundles.PLAYER_BUNDLE_NAME etc. are static fields, not methods - a field-name
