@@ -1400,15 +1400,24 @@ namespace HideoutShootout
                 return;
             }
 
+            Plugin.LogSource.LogInfo($"Loading {bundlePaths.Length} bundles for hideout bot profile {profile.Id}...");
             IOperation operation = assetsManager.LoadBundlesAsync(bundlePaths);
-            // IOperation is a coroutine-shaped Unity/Comfort.Common type (implements IEnumerator),
-            // not directly awaitable - poll Completed instead. Task.Yield keeps this off a thread-
-            // pool thread, same reasoning as everywhere else on this path: everything downstream
-            // (LocalPlayer.Create, BotOwner.Create) is Unity API work that must run on the main
-            // thread.
-            while (!operation.Completed)
+
+            // IOperation implements IEnumerator but nothing was driving it - polling .Completed
+            // without ever calling MoveNext() left it permanently stuck at "not completed", which
+            // silently hung the whole spawn (no exception, no bot, nothing in the log) rather than
+            // failing loudly. yield-returning it from a coroutine lets Unity's own coroutine runner
+            // pump MoveNext() every frame the way any other nested IEnumerator operation is meant to
+            // run. Bridged back into this async method via a TaskCompletionSource, with a timeout so
+            // a genuinely stuck load fails loudly instead of hanging forever again.
+            TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
+            Plugin.Instance.StartCoroutine(DriveOperationCoroutine(operation, tcs));
+
+            Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(20)));
+            if (completed != tcs.Task)
             {
-                await Task.Yield();
+                Plugin.LogSource.LogWarning($"LoadBundlesAsync timed out after 20s for hideout bot profile {profile.Id}; proceeding anyway.");
+                return;
             }
 
             if (operation.Failed)
@@ -1418,6 +1427,12 @@ namespace HideoutShootout
             }
 
             LogSpawnDiagnostic($"Loaded {bundlePaths.Length} bundles for hideout bot profile {profile.Id}.");
+        }
+
+        private static System.Collections.IEnumerator DriveOperationCoroutine(IOperation operation, TaskCompletionSource<bool> tcs)
+        {
+            yield return operation;
+            tcs.TrySetResult(operation.Succeed);
         }
 
         /// <summary>

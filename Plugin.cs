@@ -9,9 +9,11 @@ namespace HideoutShootout
     public class Plugin : BaseUnityPlugin
     {
         public static ManualLogSource LogSource;
+        public static Plugin Instance;
 
         private void Start()
         {
+            Instance = this;
             LogSource = Logger;
             Settings.Init(Config);
 
