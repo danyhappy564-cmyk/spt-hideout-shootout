@@ -158,6 +158,13 @@ namespace HideoutShootout
                     .Where(id => id != null))
                 : new HashSet<string>();
 
+            LocalPlayer TryFindNewPlayer() => Singleton<GameWorld>.Instantiated
+                ? Singleton<GameWorld>.Instance.AllAlivePlayersList
+                    .OfType<LocalPlayer>()
+                    .FirstOrDefault(p => p.Profile != null && !profileIdsBeforeSpawn.Contains(p.Profile.Id))
+                : null;
+
+            LocalPlayer recoveredNewPlayer = null;
             spawner.OnBotCreated += botCreatedHandler;
             try
             {
@@ -172,10 +179,17 @@ namespace HideoutShootout
                     await spawner.SpawnBotByTypeForce(1, WildSpawnType.assault, BotDifficulty.normal, new BotSpawnParams());
                 }
 
-                // Allow the async activation pipeline a brief window to invoke OnBotCreated.
-                for (int waitTick = 0; waitTick < 30 && createdBot == null; waitTick++)
+                // PORTING NOTE: confirmed in-game the bot is already fully created by the time the
+                // call above returns - the exception that breaks OnBotCreated happens synchronously
+                // within that same awaited chain, so waiting the full fixed timeout before checking
+                // the GameWorld diff was adding a needless ~3s of "invisible" bot every time (it was
+                // never going to be found any other way). Check immediately, and only fall back to
+                // polling for the rare case where creation is still genuinely in flight.
+                recoveredNewPlayer = TryFindNewPlayer();
+                for (int waitTick = 0; waitTick < 30 && createdBot == null && recoveredNewPlayer == null; waitTick++)
                 {
                     await Task.Delay(100);
+                    recoveredNewPlayer = TryFindNewPlayer();
                 }
             }
             finally
@@ -183,17 +197,11 @@ namespace HideoutShootout
                 spawner.OnBotCreated -= botCreatedHandler;
             }
 
-            if (createdBot == null && Singleton<GameWorld>.Instantiated)
+            if (createdBot == null && recoveredNewPlayer != null
+                && TryResolveMemberByTypeDeep(recoveredNewPlayer, typeof(BotOwner), 3) is BotOwner recoveredBotOwner)
             {
-                LocalPlayer newPlayer = Singleton<GameWorld>.Instance.AllAlivePlayersList
-                    .OfType<LocalPlayer>()
-                    .FirstOrDefault(p => p.Profile != null && !profileIdsBeforeSpawn.Contains(p.Profile.Id));
-
-                if (newPlayer != null && TryResolveMemberByTypeDeep(newPlayer, typeof(BotOwner), 3) is BotOwner recoveredBotOwner)
-                {
-                    createdBot = recoveredBotOwner;
-                    LogSpawnDiagnostic($"Recovered BotOwner for profile {newPlayer.Profile.Id} via GameWorld diff - OnBotCreated never reached our handler (likely another mod's handler threw first).");
-                }
+                createdBot = recoveredBotOwner;
+                LogSpawnDiagnostic($"Recovered BotOwner for profile {recoveredNewPlayer.Profile.Id} via GameWorld diff - OnBotCreated never reached our handler (likely another mod's handler threw first).");
             }
 
             if (createdBot == null)
