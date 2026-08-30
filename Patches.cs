@@ -1,4 +1,5 @@
 ﻿using EFT;
+using EFT.AssetsManager;
 using EFT.Game.Spawning;
 using EFT.Hideout;
 using EFT.InputSystem;
@@ -1346,41 +1347,77 @@ namespace HideoutShootout
         /// callback parameter's delegate type is itself malformed on this client build - the CLR
         /// refuses to load it ("delegate class must be sealed"), which means no external C# code
         /// can construct a matching argument for it; it is effectively uncallable from mod code.
-        /// Switched to <c>RegisterPools</c> instead, which has no such parameter: it pre-warms the
-        /// Raid pool category using a size-based config rather than loading specific resource keys
-        /// up front, and is idempotent per <c>IsPoolReady</c>. This is NOT verified to produce the
-        /// same "bot has a working skeleton/animator" outcome the original per-resource preload
-        /// did - if a hideout-spawned bot's model/animator is still broken, this is the first place
-        /// to check.
+        /// <c>RegisterPools</c> (pre-warming the Raid pool category by size-based config) replaces
+        /// the pool-capacity half of what that method did, but pool capacity alone isn't the same
+        /// as actually loading a bundle - confirmed in-game: LocalPlayer.Create still threw
+        /// "&lt;bundle path&gt; is not loaded. You should load it first." for the profile's own gear/
+        /// body bundles. Fixed by explicitly loading them through
+        /// <c>AssetsManagerSingletonClass.Manager.LoadBundlesAsync(string[])</c> - a separate, still-
+        /// working API found by method-name search - using the bundle paths straight off
+        /// <c>ResourceKey.path</c> (confirmed to match the ".bundle"-suffixed paths in the error
+        /// message) for every entry <c>Profile.GetAllPrefabPaths(true)</c> returns. <c>true</c> here
+        /// matches SevenBoldPencil.TargetDummies's own working hideout bot-spawn call (a sibling mod
+        /// solving the same problem), even though this mod's original SPT 4.1 code passed
+        /// <c>false</c>.
         /// </para>
         /// </summary>
         private static async Task PreloadProfileBundlesAsync(Profile profile)
         {
-            if (!Singleton<PoolManagerClass>.Instantiated)
+            if (Singleton<PoolManagerClass>.Instantiated)
             {
-                Plugin.LogSource.LogWarning("PoolManagerClass singleton is unavailable; bot prefabs cannot be preloaded and the bot will spawn without a model.");
+                PoolManagerClass pools = Singleton<PoolManagerClass>.Instance;
+                if (!pools.IsPoolReady(PoolManagerClass.PoolsCategory.Raid))
+                {
+                    pools.RegisterPools(
+                        PoolManagerClass.PoolsCategory.Raid,
+                        null,
+                        ObjectsFactoryDataClass.Default,
+                        PoolManagerClass.AssemblyType.Local);
+                }
+            }
+            else
+            {
+                Plugin.LogSource.LogWarning("PoolManagerClass singleton is unavailable; the Raid pool category could not be registered.");
+            }
+
+            string[] bundlePaths = profile.GetAllPrefabPaths(true)
+                .Where(key => key != null)
+                .Select(key => key.path)
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Distinct()
+                .ToArray();
+
+            if (bundlePaths.Length == 0)
+            {
+                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab bundle paths to preload.");
                 return;
             }
 
-            PoolManagerClass pools = Singleton<PoolManagerClass>.Instance;
-            if (pools.IsPoolReady(PoolManagerClass.PoolsCategory.Raid))
+            IAssetsManager assetsManager = AssetsManagerSingletonClass.Manager;
+            if (assetsManager == null)
             {
+                Plugin.LogSource.LogWarning("AssetsManagerSingletonClass.Manager is unavailable; bot bundles cannot be preloaded.");
                 return;
             }
 
-            // No ConfigureAwait(false) anywhere on this path: Unity's SynchronizationContext is the
-            // main thread, and everything that resumes after this (LocalPlayer.Create, and
-            // BotOwner.Create further up the chain) is Unity API work that must run there. Resuming
-            // on a thread-pool thread crashes the process. RegisterPools itself is synchronous, but
-            // keep this method async in case a later fix needs to await something around it again.
-            pools.RegisterPools(
-                PoolManagerClass.PoolsCategory.Raid,
-                null,
-                ObjectsFactoryDataClass.Default,
-                PoolManagerClass.AssemblyType.Local);
-            await Task.CompletedTask;
+            IOperation operation = assetsManager.LoadBundlesAsync(bundlePaths);
+            // IOperation is a coroutine-shaped Unity/Comfort.Common type (implements IEnumerator),
+            // not directly awaitable - poll Completed instead. Task.Yield keeps this off a thread-
+            // pool thread, same reasoning as everywhere else on this path: everything downstream
+            // (LocalPlayer.Create, BotOwner.Create) is Unity API work that must run on the main
+            // thread.
+            while (!operation.Completed)
+            {
+                await Task.Yield();
+            }
 
-            LogSpawnDiagnostic($"Registered the Raid pool category for hideout bot profile {profile.Id}.");
+            if (operation.Failed)
+            {
+                Plugin.LogSource.LogWarning($"LoadBundlesAsync failed for hideout bot profile {profile.Id}: {operation.Error}");
+                return;
+            }
+
+            LogSpawnDiagnostic($"Loaded {bundlePaths.Length} bundles for hideout bot profile {profile.Id}.");
         }
 
         /// <summary>
