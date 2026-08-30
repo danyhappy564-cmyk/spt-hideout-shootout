@@ -1418,18 +1418,38 @@ namespace HideoutShootout
                 Plugin.LogSource.LogInfo($"LoadBundlesAsync operation concrete type: {operation.GetType().FullName}");
                 if (assetsManager is AssetsManagerClass concreteAssetsManager)
                 {
-                    object bundlesManager = concreteAssetsManager.BundlesManager;
+                    BundlesManagerClass bundlesManager = concreteAssetsManager.BundlesManager;
                     if (bundlesManager == null)
                     {
                         Plugin.LogSource.LogInfo("AssetsManagerClass.BundlesManager is null.");
                     }
                     else
                     {
-                        string typeName = bundlesManager.GetType().FullName;
-                        string componentState = bundlesManager is UnityEngine.Component component
-                            ? $" gameObject='{component.gameObject.name}' activeInHierarchy={component.gameObject.activeInHierarchy} enabled={(bundlesManager as UnityEngine.Behaviour)?.enabled}"
-                            : " (not a UnityEngine.Component)";
-                        Plugin.LogSource.LogInfo($"AssetsManagerClass.BundlesManager type: {typeName}{componentState}");
+                        // BundlesManagerClass isn't a Unity Component, so nothing ticks it
+                        // automatically via Update() - the actual file I/O is presumably kicked
+                        // off eagerly rather than polled per-frame. DownloadingUrl/LoadingUrl being
+                        // set to a real CDN address (rather than empty/local) would mean the load
+                        // is waiting on a network fetch that an offline SPT install will never
+                        // complete - which would explain an operation that just sits there forever
+                        // instead of failing loudly.
+                        Plugin.LogSource.LogInfo(
+                            $"BundlesManagerClass: DownloadingUrl='{bundlesManager.DownloadingUrl}' LoadingUrl='{bundlesManager.LoadingUrl}'");
+
+                        string firstBundle = bundlePaths[0];
+                        UnityEngine.AssetBundle existing = bundlesManager.FindBundle(firstBundle);
+                        Plugin.LogSource.LogInfo($"FindBundle('{firstBundle}') before load: {(existing == null ? "null (not already loaded)" : existing.name)}");
+
+                        // Single-bundle load with logErrors:true, in case the batch API
+                        // (LoadBundlesAsync) is swallowing an error message that this one surfaces.
+                        // Only diagnostic - the real preload below still uses the full batch call.
+                        IOperation singleOp = (IOperation)bundlesManager.LoadBundleAsync(firstBundle, true);
+                        for (int i = 0; i < 5 && !singleOp.Completed; i++)
+                        {
+                            singleOp.MoveNext();
+                            Plugin.LogSource.LogInfo($"LoadBundleAsync('{firstBundle}') poll {i}: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
+                            System.Threading.Thread.Sleep(500);
+                        }
+                        Plugin.LogSource.LogInfo($"LoadBundleAsync('{firstBundle}') final: Completed={singleOp.Completed} Succeed={singleOp.Succeed} Failed={singleOp.Failed} Error={singleOp.Error}");
                     }
                 }
             }
