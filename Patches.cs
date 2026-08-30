@@ -1502,13 +1502,7 @@ namespace HideoutShootout
                 {
                     LogSpawnDiagnostic($"Bundle key candidate '{candidate.Label}' WORKED - loaded {bundleNames.Length} bundles for hideout bot profile {profile.Id}.");
 
-                    // PORTING NOTE: confirmed in-game this pass can take longer than 15s per key
-                    // (still "pending" at that point every time so far) - awaiting it here was
-                    // adding a guaranteed multi-second stall to every single spawn attempt for a
-                    // benefit that's never actually been observed to land in time. Fire-and-forget
-                    // it instead: LocalPlayer.Create proceeds immediately, and if this eventually
-                    // does complete in the background, it's there for whichever attempt comes next.
-                    _ = EnsureHandRigBundlesLoadedAsync(assetsManager, resourceKeys, profile.Id);
+                    EnsureHandRigBundlesLoaded(resourceKeys, profile.Id);
                     return;
                 }
 
@@ -1524,15 +1518,19 @@ namespace HideoutShootout
         // (assets/content/hands/...), leaving LocalPlayer.Create throwing "X is not loaded" for
         // exactly those even though the bulk call reports Succeed=true.
         //
-        // PORTING NOTE: a first attempt ran LoadAssetAsync(ResourceKey) as a top-up over EVERY
-        // resourceKey (not just hands), reasoning that passing the ResourceKey object directly
-        // sidesteps any string-format mismatch. Confirmed in-game that this call path goes over
-        // an HTTP layer (a local bundle server, judging by the "HTTP/1.1 404 Not Found" error it
-        // produced for an ordinary vanilla item) that's far slower than the bulk call and doesn't
-        // reliably finish in time - 51 of 52 calls were still pending after a 20s wait. Scoped down
-        // to just the (usually 1-3) hand-related keys so the added wait stays small regardless of
-        // how slow this path is.
-        private static async Task EnsureHandRigBundlesLoadedAsync(IAssetsManager assetsManager, ResourceKey[] resourceKeys, string profileId)
+        // PORTING NOTE: two earlier attempts both went through IAssetsManager and both failed to
+        // make hand-rig bundles ready in time - a per-key LoadAssetAsync(ResourceKey) top-up took
+        // over an HTTP-backed path (confirmed by an actual "HTTP/1.1 404 Not Found" on an ordinary
+        // item) and never completed within 15-20s even for a single key. A method-name search
+        // turned up a completely different API: GClass1857 (a static helper) + IEasyAssets (via
+        // Singleton<IEasyAssets>.Instance) - GClass1857.GetAsset<T>(easyAssets, ResourceKey) is a
+        // SYNCHRONOUS call (no Task/IOperation wrapper at all) that another already-installed mod's
+        // own compiled patch is seen calling directly (GClass1857.InstantiateAsset<LoddedSkin> from
+        // a real WeaponPreview call site) - this looks like the actual mechanism the game itself
+        // uses to resolve a ResourceKey to a loaded asset, as opposed to the coarser/async
+        // bundle-file-level APIs tried so far. Calling it here, synchronously, right before
+        // LocalPlayer.Create, for just the hand-related keys.
+        private static void EnsureHandRigBundlesLoaded(ResourceKey[] resourceKeys, string profileId)
         {
             ResourceKey[] handKeys = resourceKeys
                 .Where(key => !string.IsNullOrEmpty(key.path) && key.path.IndexOf("hand", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1543,33 +1541,24 @@ namespace HideoutShootout
                 return;
             }
 
-            var pending = new List<(ResourceKey Key, IOperation Op, TaskCompletionSource<bool> Tcs)>();
+            if (!Singleton<IEasyAssets>.Instantiated)
+            {
+                Plugin.LogSource.LogWarning($"Singleton<IEasyAssets> is not instantiated; cannot top-up hand-rig bundles for profile {profileId}.");
+                return;
+            }
+
+            IEasyAssets easyAssets = Singleton<IEasyAssets>.Instance;
             foreach (ResourceKey key in handKeys)
             {
                 try
                 {
-                    IOperation op = (IOperation)assetsManager.LoadAssetAsync(key);
-                    TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
-                    Plugin.Instance.StartCoroutine(DriveOperationCoroutine(op, tcs));
-                    pending.Add((key, op, tcs));
+                    UnityEngine.GameObject asset = GClass1857.GetAsset<UnityEngine.GameObject>(easyAssets, key);
+                    Plugin.LogSource.LogInfo($"GClass1857.GetAsset<GameObject>('{key.path}') for profile {profileId}: {(asset == null ? "null" : asset.name)}");
                 }
                 catch (Exception ex)
                 {
-                    Plugin.LogSource.LogDebug($"LoadAssetAsync(ResourceKey) threw for '{key.path}': {ex.Message}");
+                    Plugin.LogSource.LogWarning($"GClass1857.GetAsset threw for '{key.path}': {ex.GetType().Name}: {ex.Message}");
                 }
-            }
-
-            DateTime waitStart = DateTime.UtcNow;
-            const double timeoutSeconds = 15;
-            while (pending.Any(p => !p.Tcs.Task.IsCompleted) && (DateTime.UtcNow - waitStart).TotalSeconds < timeoutSeconds)
-            {
-                await Task.Delay(250);
-            }
-
-            foreach (var p in pending)
-            {
-                string state = !p.Tcs.Task.IsCompleted ? "still pending" : p.Op.Succeed ? "succeeded" : $"did not succeed (Failed={p.Op.Failed} Error={p.Op.Error})";
-                Plugin.LogSource.LogInfo($"Hand-rig top-up for profile {profileId}: '{p.Key.path}' -> {state}");
             }
         }
 
