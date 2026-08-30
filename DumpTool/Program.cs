@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Text;
 
 // One-off tool: dumps type/member info from the real installed EFT client assemblies so the
@@ -85,22 +89,21 @@ class Program
         }
         Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
-        // Round 3 targets, informed by round 2's results:
-        // - BotCreatorClass's ctor is (IBotGame, GInterface21 profileCreator, Func<GameWorld,
-        //   Profile, Vector3, Task<LocalPlayer>> playerCreator) - matches this mod's call shape
-        //   exactly except the profileCreator param is GInterface21, not BotProfileClient. Need
-        //   GInterface21's implementors to find what actually goes there.
-        // - ISession (EFT's, not Dissonance's) implements IBackEndSession and looks like the real
-        //   IEftSession replacement. TryGetBackEndSession() calls
-        //   ClientAppUtils.GetMainApp()?.GetClientBackEndSession() - need ClientAppUtils dumped to
-        //   see GetMainApp()'s return type, then that type's GetClientBackEndSession() return type,
-        //   to confirm whether just retyping the local variable to ISession is enough.
-        // - PoolManagerClass.LoadBundlesAndCreatePools exists (method name recovered once the dump
-        //   tool stopped losing methods to unloadable delegate parameter types) but its full
-        //   signature was still hidden behind that same error - re-dumping now that FormatMethod
-        //   formats each parameter independently instead of failing the whole method.
+        // Round 4 targets, informed by round 3's results:
+        // - GInterface21's real implementor for runtime spawning is GClass680 (its other
+        //   implementor, BotsPresets, sounds editor/preset-related) - need its constructor to
+        //   replace `new BotProfileClient(session, spawnWaves, bossLocationSpawns, ..., false)`.
+        // - ClientAppUtils doesn't exist anywhere in this client even after scanning every
+        //   Managed\*.dll - something else exposes the equivalent of GetMainApp(). Searching by
+        //   method name across every loaded type instead of guessing a class name.
+        // - PoolManagerClass.LoadBundlesAndCreatePools's signature was hidden behind an
+        //   unsealed GDelegateNN callback parameter that the CLR refuses to load even via
+        //   GetParameters() (not just formatting) - DumpTool now falls back to reading the
+        //   signature straight from the metadata tables (System.Reflection.Metadata) when that
+        //   happens, bypassing the type loader entirely.
         string[] targets =
         {
+            "GClass680", "BotsPresets",
             "GInterface21", "ClientAppUtils",
             "BotCreatorClass", "ISession",
             "BotProfileDataClass", "ProfileDataClass", "GClass688", "GClass689",
@@ -113,6 +116,45 @@ class Program
             "GClass682", "GClass406", "IGetProfileData", "PoolManagerClass", "LocalPlayer", "Profile",
             "BotCreationData", "BotCreationDataClass", "BotSpawner", "IBotCreator", "MovementContext",
         };
+
+        // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
+        // its equivalent by searching every loaded type's static methods by name instead.
+        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession" };
+        using (var msw = new StreamWriter("method_search.txt", false, Encoding.UTF8))
+        {
+            foreach (var needle in methodNameSearches)
+            {
+                msw.WriteLine("==================================================");
+                msw.WriteLine("METHOD NAME CONTAINS: " + needle);
+                msw.WriteLine("==================================================");
+
+                foreach (var t in typesArr)
+                {
+                    MethodInfo[] methods;
+                    try
+                    {
+                        methods = t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic
+                            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+                    }
+                    catch { continue; }
+
+                    foreach (var m in methods)
+                    {
+                        if (m.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0)
+                            continue;
+
+                        string sig;
+                        try { sig = FormatMethod(m); }
+                        catch (Exception ex) { sig = m.Name + " <error: " + ex.Message + ">"; }
+
+                        msw.WriteLine("  " + t.FullName + (m.IsStatic ? " [static]" : "") + " :: " + sig);
+                    }
+                }
+
+                msw.WriteLine();
+            }
+        }
+        Console.WriteLine("Wrote method_search.txt");
 
         using (var w = new StreamWriter("dump.txt", false, Encoding.UTF8))
         {
@@ -261,8 +303,21 @@ class Program
         }
 
         ParameterInfo[] parameters;
-        try { parameters = m.GetParameters(); }
-        catch (Exception ex) { return $"{m.Name}(<could not get parameters: {ex.Message}>)"; }
+        try
+        {
+            parameters = m.GetParameters();
+        }
+        catch (Exception)
+        {
+            // GetParameters() itself throws when ANY parameter's type can't load (observed with
+            // PoolManagerClass.LoadBundlesAndCreatePools's callback parameter - an unsealed
+            // GDelegateNN class the CLR refuses to load at all). Reflection can't recover from
+            // that, but the raw metadata (the signature blob + parameter name table) is still
+            // sitting in the file - read it directly with System.Reflection.Metadata instead of
+            // going through the type loader.
+            string raw = TryRawFormatMethod(m);
+            return raw ?? $"{m.Name}(<could not get parameters even via raw metadata>)";
+        }
 
         var parts = new List<string>();
         foreach (var p in parameters)
@@ -272,5 +327,98 @@ class Program
         }
 
         return $"{ret} {m.Name}({string.Join(", ", parts)})".Trim();
+    }
+
+    static readonly Dictionary<string, MetadataReader> _readerCache = new();
+    static readonly List<PEReader> _peReadersKeepAlive = new();
+
+    static MetadataReader GetRawReader(string dllPath)
+    {
+        if (_readerCache.TryGetValue(dllPath, out var cached))
+            return cached;
+
+        var pe = new PEReader(File.OpenRead(dllPath));
+        _peReadersKeepAlive.Add(pe); // keep the PEReader (and its stream) alive for the reader's lifetime
+        var mr = pe.GetMetadataReader();
+        _readerCache[dllPath] = mr;
+        return mr;
+    }
+
+    // Decodes a method's signature straight from the metadata tables/blob heap, bypassing the
+    // CLR type loader entirely - the only way to see a signature that references an unloadable
+    // type (e.g. a malformed obfuscator-generated delegate class).
+    static string TryRawFormatMethod(MethodBase m)
+    {
+        try
+        {
+            string dllPath = m.Module.FullyQualifiedName;
+            var mr = GetRawReader(dllPath);
+
+            EntityHandle handle = MetadataTokens.EntityHandle(m.MetadataToken);
+            if (handle.Kind != HandleKind.MethodDefinition)
+                return null;
+
+            var mdHandle = (MethodDefinitionHandle)handle;
+            MethodDefinition md = mr.GetMethodDefinition(mdHandle);
+            MethodSignature<string> sig = md.DecodeSignature(new RawTypeNameProvider(), genericContext: null);
+
+            var paramNamesBySequence = new Dictionary<int, string>();
+            foreach (var ph in md.GetParameters())
+            {
+                Parameter p = mr.GetParameter(ph);
+                if (p.SequenceNumber == 0) continue; // sequence 0 is the return value, not a parameter
+                paramNamesBySequence[p.SequenceNumber] = mr.GetString(p.Name);
+            }
+
+            var parts = new List<string>();
+            for (int i = 0; i < sig.ParameterTypes.Length; i++)
+            {
+                string name = paramNamesBySequence.TryGetValue(i + 1, out var n) ? n : ("arg" + (i + 1));
+                parts.Add(sig.ParameterTypes[i] + " " + name);
+            }
+
+            return $"{sig.ReturnType} {m.Name}({string.Join(", ", parts)}) [via raw metadata]".Trim();
+        }
+        catch (Exception ex)
+        {
+            return $"{m.Name}(<raw metadata read also failed: {ex.Message}>)";
+        }
+    }
+}
+
+// Minimal ISignatureTypeProvider that resolves type names by reading metadata tables/strings
+// directly - it never asks the CLR to load a Type, so it can't hit a TypeLoadException.
+sealed class RawTypeNameProvider : ISignatureTypeProvider<string, object>
+{
+    public string GetPrimitiveType(PrimitiveTypeCode typeCode) => typeCode.ToString();
+    public string GetArrayType(string elementType, ArrayShape shape) => elementType + "[]";
+    public string GetSZArrayType(string elementType) => elementType + "[]";
+    public string GetByReferenceType(string elementType) => elementType + "&";
+    public string GetPointerType(string elementType) => elementType + "*";
+    public string GetPinnedType(string elementType) => elementType;
+    public string GetGenericMethodParameter(object genericContext, int index) => "!!" + index;
+    public string GetGenericTypeParameter(object genericContext, int index) => "!" + index;
+    public string GetModifiedType(string modifier, string unmodifiedType, bool isRequired) => unmodifiedType;
+    public string GetFunctionPointerType(MethodSignature<string> signature) => "fnptr";
+
+    public string GetGenericInstantiation(string genericType, ImmutableArray<string> typeArguments) =>
+        genericType + "<" + string.Join(",", typeArguments) + ">";
+
+    public string GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
+    {
+        TypeDefinition td = reader.GetTypeDefinition(handle);
+        return reader.GetString(td.Name);
+    }
+
+    public string GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
+    {
+        TypeReference tr = reader.GetTypeReference(handle);
+        return reader.GetString(tr.Name);
+    }
+
+    public string GetTypeFromSpecification(MetadataReader reader, object genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
+    {
+        TypeSpecification ts = reader.GetTypeSpecification(handle);
+        return ts.DecodeSignature(this, genericContext);
     }
 }
