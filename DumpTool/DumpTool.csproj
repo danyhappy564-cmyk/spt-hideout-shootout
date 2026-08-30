@@ -7,16 +7,10 @@
     <LangVersion>latest</LangVersion>
     <SptRoot Condition="'$(SptRoot)' == ''">E:\SPT 4.0.10</SptRoot>
     <AssemblySearchPaths>$(AssemblySearchPaths);$(SptRoot)\EscapeFromTarkov_Data\Managed</AssemblySearchPaths>
-    <!-- ICSharpCode.Decompiler ships built against System.Reflection.Metadata 6.0.0, but our own
-         direct reference pins 8.0.0 - NuGet unifies the compile-time reference to 8.0.0, but a
-         net48 exe needs an explicit binding redirect at runtime or loading ICSharpCode.Decompiler.dll
-         throws a FileLoadException (its manifest asks for the exact 6.0.0.0 assembly version). -->
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Reflection.Metadata" Version="8.0.0" />
-    <PackageReference Include="ICSharpCode.Decompiler" Version="8.2.0.7535" />
   </ItemGroup>
 
   <ItemGroup>
