@@ -89,20 +89,18 @@ class Program
         }
         Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
-        // Round 4 targets, informed by round 3's results:
-        // - GInterface21's real implementor for runtime spawning is GClass680 (its other
-        //   implementor, BotsPresets, sounds editor/preset-related) - need its constructor to
-        //   replace `new BotProfileClient(session, spawnWaves, bossLocationSpawns, ..., false)`.
-        // - ClientAppUtils doesn't exist anywhere in this client even after scanning every
-        //   Managed\*.dll - something else exposes the equivalent of GetMainApp(). Searching by
-        //   method name across every loaded type instead of guessing a class name.
-        // - PoolManagerClass.LoadBundlesAndCreatePools's signature was hidden behind an
-        //   unsealed GDelegateNN callback parameter that the CLR refuses to load even via
-        //   GetParameters() (not just formatting) - DumpTool now falls back to reading the
-        //   signature straight from the metadata tables (System.Reflection.Metadata) when that
-        //   happens, bypassing the type loader entirely.
+        // Round 5 targets, informed by round 4's results:
+        // - BotsPresets's constructor (ISession, BotWaveDataClass[], BossLocationSpawn[],
+        //   WaveInfoClass[], bool) is the confirmed replacement for
+        //   `new BotProfileClient(session, spawnWaves, bossLocationSpawns, null, false)` -
+        //   already wired into Patches.cs.
+        // - method_search.txt found EFT.ClientApplication`1.GetClientBackEndSession() - a generic
+        //   base class, not the missing ClientAppUtils. Need the concrete subtype (likely
+        //   TarkovApplication) and how mod code obtains its live instance - dumping
+        //   ClientApplication`1 itself for static accessors, plus guessing common candidate names.
         string[] targets =
         {
+            "ClientApplication`1", "TarkovApplication", "PatchConstants", "GameApplication",
             "GClass680", "BotsPresets",
             "GInterface21", "ClientAppUtils",
             "BotCreatorClass", "ISession",
@@ -149,6 +147,33 @@ class Program
 
                         msw.WriteLine("  " + t.FullName + (m.IsStatic ? " [static]" : "") + " :: " + sig);
                     }
+                }
+
+                msw.WriteLine();
+            }
+
+            // GetMainApp() might really be a static property/field instead of a method (e.g. a
+            // Singleton<T>-style accessor or a static field SPT's own patches populate).
+            string[] typeNameNeedles = { "ClientApplication", "TarkovApplication", "PatchConstants" };
+            foreach (var needle in typeNameNeedles)
+            {
+                msw.WriteLine("==================================================");
+                msw.WriteLine("STATIC MEMBERS WHOSE TYPE CONTAINS: " + needle);
+                msw.WriteLine("==================================================");
+
+                foreach (var t in typesArr)
+                {
+                    try
+                    {
+                        foreach (var p in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                            if (SafeTypeName(p.PropertyType).IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                                msw.WriteLine("  prop: " + t.FullName + "." + p.Name + " : " + SafeTypeName(p.PropertyType));
+
+                        foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                            if (SafeTypeName(f.FieldType).IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                                msw.WriteLine("  field: " + t.FullName + "." + f.Name + " : " + SafeTypeName(f.FieldType));
+                    }
+                    catch { }
                 }
 
                 msw.WriteLine();
@@ -287,6 +312,12 @@ class Program
                 w.WriteLine("  " + label + ": " + name + " <error formatting signature: " + ex.Message + ">");
             }
         }
+    }
+
+    static string SafeTypeName(Type t)
+    {
+        try { return t.ToString(); }
+        catch (Exception ex) { return "<?:" + ex.GetType().Name + ">"; }
     }
 
     static string FormatMethod(MethodBase m)

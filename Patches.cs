@@ -1225,13 +1225,13 @@ namespace HideoutShootout
             return EnsureRealBotCreator(ibotGame);
         }
 
-        // PORTING NOTE (SPT 4.0.13, still open): this whole method's real-IBotCreator pipeline is
-        // built against SPT 4.1's BotProfileClient/BotCreatorClient/IEftSession/SpawnWave, none of
-        // which exist under those names anywhere in the 4.0.13 client (confirmed by scanning
-        // every Managed\*.dll). IBotCreator's only implementor on 4.0.13 is BotCreatorClass, and
-        // LocalPlayer.Create takes ISession (not IEftSession) - likely the replacements, but their
-        // constructor/full shape isn't confirmed yet. Do not guess-rename the identifiers below
-        // until that's confirmed; this method will not compile as-is on 4.0.13.
+        // PORTING NOTE (SPT 4.0.13): confirmed replacements via reflection off the installed
+        // Assembly-CSharp.dll - BotProfileClient is BotsPresets here (constructor shape identical:
+        // session, wave array, boss-wave array, non-wave array, checkProfilesLoaded), and
+        // BotCreatorClient is BotCreatorClass. IEftSession is ISession (LocalPlayer.Create and
+        // BotsPresets's constructor both take it). SpawnWave is BotWaveDataClass.
+        // Still open: ClientAppUtils doesn't exist under that name anywhere in this client, so
+        // TryGetBackEndSession() below is not yet ported - see its own porting note.
         private static IBotCreator EnsureRealBotCreator(IBotGame ibotGame)
         {
             if (_realBotCreator != null)
@@ -1247,24 +1247,24 @@ namespace HideoutShootout
                     return null;
                 }
 
-                IEftSession session = TryGetBackEndSession();
+                ISession session = TryGetBackEndSession();
                 if (session == null)
                 {
-                    Plugin.LogSource.LogWarning("Cannot build real IBotCreator: IEftSession is unavailable.");
+                    Plugin.LogSource.LogWarning("Cannot build real IBotCreator: ISession is unavailable.");
                     return null;
                 }
 
-                BotProfileClient profileCreator = new BotProfileClient(
+                GInterface21 profileCreator = new BotsPresets(
                     session,
-                    Array.Empty<SpawnWave>(),
+                    Array.Empty<BotWaveDataClass>(),
                     Array.Empty<BossLocationSpawn>(),
                     null,
                     false);
 
                 Func<GameWorld, Profile, Vector3, Task<LocalPlayer>> playerFactory = CreateBotLocalPlayerAsync;
 
-                _realBotCreator = new BotCreatorClient(ibotGame, profileCreator, playerFactory);
-                LogSpawnDiagnostic("Built real BotProfileClient-backed BotCreatorClient for hideout spawning.");
+                _realBotCreator = new BotCreatorClass(ibotGame, profileCreator, playerFactory);
+                LogSpawnDiagnostic("Built real BotsPresets-backed BotCreatorClass for hideout spawning.");
                 return _realBotCreator;
             }
             catch (Exception ex)
@@ -1275,13 +1275,19 @@ namespace HideoutShootout
             }
         }
 
+        // PORTING NOTE (SPT 4.0.13, still open): ClientAppUtils doesn't exist under that name
+        // anywhere in this client (confirmed by scanning every Managed\*.dll). The method it calls
+        // does exist - EFT.ClientApplication`1.GetClientBackEndSession() - but that's a generic
+        // base class; still need to find the concrete subtype (TarkovApplication?) and how mod
+        // code is meant to obtain the live instance of it (a Singleton<T>, a static field SPT's
+        // own patches populate, etc). This method will not compile as-is on 4.0.13.
         /// <summary>
-        /// Resolves <see cref="IEftSession"/> via the canonical SPT pattern
+        /// Resolves <see cref="ISession"/> via the canonical SPT pattern
         /// (<c>ClientAppUtils.GetMainApp().GetClientBackEndSession()</c>) used throughout
         /// SPT.Reflection / SPT.SinglePlayer / SPT.Debugging. The session backs profile generation
-        /// requests from <see cref="BotProfileClient.CreateProfile"/>.
+        /// requests from <see cref="BotsPresets.CreateProfile"/>.
         /// </summary>
-        private static IEftSession TryGetBackEndSession()
+        private static ISession TryGetBackEndSession()
         {
             try
             {
