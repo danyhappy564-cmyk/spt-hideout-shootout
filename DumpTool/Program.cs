@@ -89,17 +89,27 @@ class Program
         }
         Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
-        // Round 5 targets, informed by round 4's results:
-        // - BotsPresets's constructor (ISession, BotWaveDataClass[], BossLocationSpawn[],
-        //   WaveInfoClass[], bool) is the confirmed replacement for
-        //   `new BotProfileClient(session, spawnWaves, bossLocationSpawns, null, false)` -
-        //   already wired into Patches.cs.
-        // - method_search.txt found EFT.ClientApplication`1.GetClientBackEndSession() - a generic
-        //   base class, not the missing ClientAppUtils. Need the concrete subtype (likely
-        //   TarkovApplication) and how mod code obtains its live instance - dumping
-        //   ClientApplication`1 itself for static accessors, plus guessing common candidate names.
+        // Round 6 targets, informed by round 5's results:
+        // - TarkovApplication confirmed: EFT.TarkovApplication : CommonClientApplication<ISession>,
+        //   inheriting ClientApplication<ISession>.GetClientBackEndSession(). Singleton<T> (already
+        //   used elsewhere in this file for GameWorld/IBotGame) is almost certainly how mod code
+        //   gets the live instance - wired into Patches.cs as Singleton<TarkovApplication>.Instance.
+        // - LoadBundlesAndCreatePools's raw signature came back: its 4th parameter is a
+        //   GDelegate62 callback, and that delegate class is itself malformed (the CLR refuses to
+        //   load it as unsealed) - meaning no C# code, ours or anyone else's, can construct a
+        //   matching argument for it. This method is likely uncallable from outside its own
+        //   assembly. RegisterPools(PoolsCategory, Transform, ObjectsFactoryDataClass, AssemblyType)
+        //   has no such parameter and is fully known - switching the whole preload strategy to it.
+        // Remaining LocalPlayer.Create args still need concrete replacements:
+        //   AppEnvironment.Config.CharacterController.BotPlayerMode (CharacterControllerSpawner.Mode
+        //   enum value), DumbStatisticsManager (an IStatisticsManager), ThirdPersonCustomizationFilter
+        //   .Default (an IViewFilter). InGameBundles (the bundle path constants) also still missing -
+        //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
+            "CharacterControllerSpawner",
+            "GClass2265", "GClass2268", "GClass2269", "LocationStatisticsCollectorAbstractClass",
+            "GClass1854", "GClass1855", "GClass1856",
             "ClientApplication`1", "TarkovApplication", "PatchConstants", "GameApplication",
             "GClass680", "BotsPresets",
             "GInterface21", "ClientAppUtils",
@@ -114,6 +124,41 @@ class Program
             "GClass682", "GClass406", "IGetProfileData", "PoolManagerClass", "LocalPlayer", "Profile",
             "BotCreationData", "BotCreationDataClass", "BotSpawner", "IBotCreator", "MovementContext",
         };
+
+        // InGameBundles.PLAYER_BUNDLE_NAME etc. are static fields, not methods - a field-name
+        // search across every loaded type instead of guessing which class holds them now.
+        // Same idea for GlobalEventDispatcher: search by a shorter substring in case it was
+        // renamed to something that doesn't contain the whole original name.
+        using (var fsw = new StreamWriter("field_search.txt", false, Encoding.UTF8))
+        {
+            string[] fieldNameNeedles = { "BUNDLE_NAME", "ANIMATOR_CONTROLLER", "ROOTMOTION" };
+            foreach (var needle in fieldNameNeedles)
+            {
+                fsw.WriteLine("==================================================");
+                fsw.WriteLine("STATIC FIELD NAME CONTAINS: " + needle);
+                fsw.WriteLine("==================================================");
+                foreach (var t in typesArr)
+                {
+                    FieldInfo[] fields;
+                    try { fields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly); }
+                    catch { continue; }
+                    foreach (var f in fields)
+                    {
+                        if (f.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        fsw.WriteLine("  " + t.FullName + "." + f.Name + " : " + SafeTypeName(f.FieldType));
+                    }
+                }
+                fsw.WriteLine();
+            }
+
+            fsw.WriteLine("==================================================");
+            fsw.WriteLine("TYPE NAME CONTAINS: EventDispatcher");
+            fsw.WriteLine("==================================================");
+            foreach (var t in typesArr)
+                if (t.Name.IndexOf("EventDispatcher", StringComparison.OrdinalIgnoreCase) >= 0)
+                    fsw.WriteLine("  " + t.FullName);
+        }
+        Console.WriteLine("Wrote field_search.txt");
 
         // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
         // its equivalent by searching every loaded type's static methods by name instead.

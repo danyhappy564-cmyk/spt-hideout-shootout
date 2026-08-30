@@ -1275,23 +1275,24 @@ namespace HideoutShootout
             }
         }
 
-        // PORTING NOTE (SPT 4.0.13, still open): ClientAppUtils doesn't exist under that name
-        // anywhere in this client (confirmed by scanning every Managed\*.dll). The method it calls
-        // does exist - EFT.ClientApplication`1.GetClientBackEndSession() - but that's a generic
-        // base class; still need to find the concrete subtype (TarkovApplication?) and how mod
-        // code is meant to obtain the live instance of it (a Singleton<T>, a static field SPT's
-        // own patches populate, etc). This method will not compile as-is on 4.0.13.
+        // PORTING NOTE (SPT 4.0.13): ClientAppUtils doesn't exist under that name anywhere in this
+        // client - it's an SPT convenience wrapper that was introduced later. TarkovApplication
+        // (EFT.TarkovApplication : CommonClientApplication<ISession>, inheriting
+        // ClientApplication<ISession>.GetClientBackEndSession()) is the concrete MonoBehaviour
+        // singleton underneath it, and Singleton<T> (Comfort.Common) is the standard accessor this
+        // same codebase already uses for GameWorld/IBotGame - the same pattern applies here.
         /// <summary>
-        /// Resolves <see cref="ISession"/> via the canonical SPT pattern
-        /// (<c>ClientAppUtils.GetMainApp().GetClientBackEndSession()</c>) used throughout
-        /// SPT.Reflection / SPT.SinglePlayer / SPT.Debugging. The session backs profile generation
-        /// requests from <see cref="BotsPresets.CreateProfile"/>.
+        /// Resolves <see cref="ISession"/> via <see cref="Singleton{T}"/> over
+        /// <see cref="TarkovApplication"/>. The session backs profile generation requests from
+        /// <see cref="BotsPresets.CreateProfile"/>.
         /// </summary>
         private static ISession TryGetBackEndSession()
         {
             try
             {
-                return ClientAppUtils.GetMainApp()?.GetClientBackEndSession();
+                return Singleton<TarkovApplication>.Instantiated
+                    ? Singleton<TarkovApplication>.Instance.GetClientBackEndSession()
+                    : null;
             }
             catch (Exception ex)
             {
@@ -1316,9 +1317,20 @@ namespace HideoutShootout
         /// PORTING NOTE (SPT 4.0.13): <c>PoolManagerClass</c> is the obfuscated name this singleton
         /// carries on the older client SPT 4.0.13 ships; <c>ObjectsFactory</c> (this mod's original
         /// SPT 4.1 target) is 4.1's deobfuscated rename of the same class, per SPT's official 4.0-to-
-        /// 4.1 client migration notes. The nested <c>PoolsCategory</c>/<c>AssemblyType</c> enums and
-        /// the method names below are NOT verified against a real 4.0.13 client; if this fails to
-        /// compile, the compiler error will name the exact member that needs remapping.
+        /// 4.1 client migration notes.
+        /// </para>
+        /// <para>
+        /// PORTING NOTE (SPT 4.0.13): <c>LoadBundlesAndCreatePools</c> (the method this mod's SPT
+        /// 4.1 target called, with a specific list of resource keys) still exists here, but its
+        /// callback parameter's delegate type is itself malformed on this client build - the CLR
+        /// refuses to load it ("delegate class must be sealed"), which means no external C# code
+        /// can construct a matching argument for it; it is effectively uncallable from mod code.
+        /// Switched to <c>RegisterPools</c> instead, which has no such parameter: it pre-warms the
+        /// Raid pool category using a size-based config rather than loading specific resource keys
+        /// up front, and is idempotent per <c>IsPoolReady</c>. This is NOT verified to produce the
+        /// same "bot has a working skeleton/animator" outcome the original per-resource preload
+        /// did - if a hideout-spawned bot's model/animator is still broken, this is the first place
+        /// to check.
         /// </para>
         /// </summary>
         private static async Task PreloadProfileBundlesAsync(Profile profile)
@@ -1329,50 +1341,25 @@ namespace HideoutShootout
                 return;
             }
 
-            bool useSimpleAnimator = profile.Info?.Settings?.UseSimpleAnimator ?? false;
-
-            // The base character rig, animator controller, animation clips and root motion table.
-            // LocalPlayer.Create picks the zombie variants when the profile uses the simple animator,
-            // so preload the matching set.
-            List<ResourceKey> resources = useSimpleAnimator
-                ? new List<ResourceKey>
-                {
-                    InGameBundles.ZOMBIE_BUNDLE_NAME,
-                    InGameBundles.ZOMBIE_ANIMATOR_CONTROLLER,
-                    InGameBundles.ZOMBIE_ANIMATION_CLIPS_KEEPER,
-                    InGameBundles.ZOMBIE_ROOTMOTION_TABLE,
-                }
-                : new List<ResourceKey>
-                {
-                    InGameBundles.PLAYER_BUNDLE_NAME,
-                    InGameBundles.PLAYER_DEFAULT_ANIMATOR_CONTROLLER,
-                    InGameBundles.PLAYER_ANIMATION_CLIPS_KEEPER,
-                    InGameBundles.PLAYER_ROOTMOTION_TABLE,
-                };
-
-            int characterKeyCount = resources.Count;
-            resources.AddRange(profile.GetAllPrefabPaths(false));
-
-            ResourceKey[] prefabPaths = resources.Where(key => key != null).Distinct().ToArray();
-            if (prefabPaths.Length == 0)
+            PoolManagerClass pools = Singleton<PoolManagerClass>.Instance;
+            if (pools.IsPoolReady(PoolManagerClass.PoolsCategory.Raid))
             {
-                Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab paths to preload.");
                 return;
             }
 
             // No ConfigureAwait(false) anywhere on this path: Unity's SynchronizationContext is the
-            // main thread, and everything that resumes after these awaits (LocalPlayer.Create, and
+            // main thread, and everything that resumes after this (LocalPlayer.Create, and
             // BotOwner.Create further up the chain) is Unity API work that must run there. Resuming
-            // on a thread-pool thread crashes the process.
-            await Singleton<PoolManagerClass>.Instance.LoadBundlesAndCreatePools(
+            // on a thread-pool thread crashes the process. RegisterPools itself is synchronous, but
+            // keep this method async in case a later fix needs to await something around it again.
+            pools.RegisterPools(
                 PoolManagerClass.PoolsCategory.Raid,
-                PoolManagerClass.AssemblyType.Local,
-                prefabPaths,
-                JobYieldPriority.General,
                 null,
-                default);
+                ObjectsFactoryDataClass.Default,
+                PoolManagerClass.AssemblyType.Local);
+            await Task.CompletedTask;
 
-            LogSpawnDiagnostic($"Preloaded {prefabPaths.Length} prefab bundles for hideout bot profile {profile.Id} ({characterKeyCount} character rig/animator, simpleAnimator={useSimpleAnimator}).");
+            LogSpawnDiagnostic($"Registered the Raid pool category for hideout bot profile {profile.Id}.");
         }
 
         /// <summary>
@@ -1428,6 +1415,12 @@ namespace HideoutShootout
                 // Mirrors BotSpawner.SpawnAndActivateNowDebugClient, the game's own debug spawn path.
                 await PreloadProfileBundlesAsync(profile);
 
+                // PORTING NOTE (SPT 4.0.13, still open): LocalPlayer.Create's own 21-argument
+                // signature is confirmed identical on this client, but three of the concrete types
+                // this mod passes for it don't exist here - AppEnvironment (for the
+                // CharacterControllerSpawner.Mode value), DumbStatisticsManager (an
+                // IStatisticsManager) and ThirdPersonCustomizationFilter (an IViewFilter). This call
+                // will not compile as-is on 4.0.13 until those are replaced.
                 LocalPlayer player = await LocalPlayer.Create(
                     gameWorld,
                     playerId,
