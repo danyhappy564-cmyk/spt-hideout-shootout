@@ -8,6 +8,7 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Text;
+using System.Diagnostics;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.Metadata;
@@ -21,6 +22,18 @@ class Program
 
     static void Main(string[] args)
     {
+        // Decompiling this obfuscator's IL can trigger a StackOverflowException deep inside
+        // ICSharpCode.Decompiler's generic type resolution - .NET cannot catch that (it kills the
+        // whole process instantly, which is exactly the unhelpful "Exception.ToString() failed"
+        // crash observed in-game). Running each decompile target as its own child process (this
+        // same exe, re-invoked with --decompile-one) means a stack overflow only kills that one
+        // child - the parent process and everything it already wrote to dump.txt survive.
+        if (args.Length > 0 && args[0] == "--decompile-one")
+        {
+            RunDecompileWorker(args);
+            return;
+        }
+
         string sptRoot = args.Length > 0 ? args[0] : @"E:\SPT 4.0.10";
         ManagedDir = Path.Combine(sptRoot, "EscapeFromTarkov_Data", "Managed");
 
@@ -370,63 +383,145 @@ class Program
         // files reflection already loaded) instead of guessing further.
         using (var dw = new StreamWriter("decompile.txt", false, Encoding.UTF8))
         {
-            void DecompileWholeType(string fullName)
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+
+            void RunOne(string header, string kind, string fullTypeName, string methodName = null)
             {
                 dw.WriteLine("==================================================");
-                dw.WriteLine("DECOMPILE TYPE: " + fullName);
+                dw.WriteLine(header);
                 dw.WriteLine("==================================================");
                 dw.Flush();
-                Type t = typesArr.FirstOrDefault(x => x.FullName == fullName);
-                if (t == null)
-                {
-                    dw.WriteLine("  NOT FOUND.");
-                    dw.WriteLine();
-                    return;
-                }
-                dw.WriteLine(TryDecompile(t.Module.FullyQualifiedName, MetadataTokens.EntityHandle(t.MetadataToken)));
-                dw.WriteLine();
-            }
 
-            void DecompileMethodByName(string typeFullName, string methodName)
-            {
-                dw.WriteLine("==================================================");
-                dw.WriteLine("DECOMPILE METHOD: " + typeFullName + "." + methodName);
-                dw.WriteLine("==================================================");
+                string outFile = Path.GetTempFileName();
+                try
+                {
+                    var workerArgs = new List<string> { "--decompile-one", sptRoot, outFile, kind, fullTypeName };
+                    if (methodName != null) workerArgs.Add(methodName);
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        // ProcessStartInfo.ArgumentList isn't available on net48 - build the
+                        // command line by hand instead, quoting every argument (sptRoot alone
+                        // contains a space: "E:\SPT 4.0.10").
+                        Arguments = string.Join(" ", workerArgs.Select(a => "\"" + a.Replace("\"", "\\\"") + "\"")),
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    };
+
+                    using (Process proc = Process.Start(psi))
+                    {
+                        bool exited = proc.WaitForExit(60000);
+                        if (!exited)
+                        {
+                            try { proc.Kill(); } catch { }
+                            dw.WriteLine("  <decompile worker timed out after 60s>");
+                        }
+                        else if (proc.ExitCode != 0)
+                        {
+                            dw.WriteLine($"  <decompile worker crashed or exited with code {proc.ExitCode} - most likely a StackOverflowException deep inside the decompiler's type resolution for this obfuscated type/method, which no try/catch can intercept>");
+                        }
+                        else if (File.Exists(outFile) && new FileInfo(outFile).Length > 0)
+                        {
+                            dw.WriteLine(File.ReadAllText(outFile, Encoding.UTF8));
+                        }
+                        else
+                        {
+                            dw.WriteLine("  <worker exited cleanly but produced no output>");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    dw.WriteLine("  <failed to run decompile worker: " + ex.Message + ">");
+                }
+                finally
+                {
+                    try { if (File.Exists(outFile)) File.Delete(outFile); } catch { }
+                }
+
+                dw.WriteLine();
                 dw.Flush();
-                Type t = typesArr.FirstOrDefault(x => x.FullName == typeFullName);
-                if (t == null)
-                {
-                    dw.WriteLine("  TYPE NOT FOUND.");
-                    dw.WriteLine();
-                    return;
-                }
-                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
-                    | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
-                MethodInfo[] methods;
-                try { methods = t.GetMethods(flags).Where(m => m.Name == methodName).ToArray(); }
-                catch (Exception ex) { dw.WriteLine("  could not enumerate methods: " + ex.Message); dw.WriteLine(); return; }
-
-                if (methods.Length == 0)
-                {
-                    dw.WriteLine("  METHOD NOT FOUND on this type.");
-                    dw.WriteLine();
-                    return;
-                }
-
-                foreach (var m in methods)
-                    dw.WriteLine(TryDecompile(t.Module.FullyQualifiedName, MetadataTokens.EntityHandle(m.MetadataToken)));
-                dw.WriteLine();
             }
 
-            DecompileWholeType("Comfort.Common.Operation`1");
-            DecompileWholeType("Comfort.Common.AbstractOperation");
-            DecompileWholeType("AssetsManagerClass+Class3515");
-            DecompileMethodByName("BundlesManagerClass", "LoadBundleAsync");
-            DecompileMethodByName("AssetsManagerClass", "LoadBundlesAsync");
+            RunOne("DECOMPILE TYPE: Comfort.Common.Operation`1", "type", "Comfort.Common.Operation`1");
+            RunOne("DECOMPILE TYPE: Comfort.Common.AbstractOperation", "type", "Comfort.Common.AbstractOperation");
+            RunOne("DECOMPILE TYPE: AssetsManagerClass+Class3515", "type", "AssetsManagerClass+Class3515");
+            RunOne("DECOMPILE METHOD: BundlesManagerClass.LoadBundleAsync", "method", "BundlesManagerClass", "LoadBundleAsync");
+            RunOne("DECOMPILE METHOD: AssetsManagerClass.LoadBundlesAsync", "method", "AssetsManagerClass", "LoadBundlesAsync");
         }
         Console.WriteLine("Wrote decompile.txt");
 
         Console.WriteLine("DONE");
+    }
+
+    // Runs in a separate child process (spawned by the RunOne helper in Main), isolated so that a
+    // StackOverflowException from decompiling one pathological obfuscated type/method only kills
+    // this child - never the parent run that already produced dump.txt/field_search.txt/etc.
+    // args: --decompile-one <sptRoot> <outFile> <type|method> <fullTypeName> [<methodName>]
+    static void RunDecompileWorker(string[] args)
+    {
+        string sptRoot = args[1];
+        string outFile = args[2];
+        string kind = args[3];
+        string fullTypeName = args[4];
+        string methodName = args.Length > 5 ? args[5] : null;
+
+        ManagedDir = Path.Combine(sptRoot, "EscapeFromTarkov_Data", "Managed");
+        AppDomain.CurrentDomain.AssemblyResolve += (s, e) =>
+        {
+            string name = new AssemblyName(e.Name).Name;
+            string path = Path.Combine(ManagedDir, name + ".dll");
+            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+        };
+
+        var allTypes = new List<Type>();
+        foreach (string dllPath in Directory.GetFiles(ManagedDir, "*.dll"))
+        {
+            string fileName = Path.GetFileNameWithoutExtension(dllPath);
+            if (fileName.StartsWith("UnityEngine.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("Unity.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+                || fileName is "mscorlib" or "netstandard" or "UnityEngine")
+            {
+                continue;
+            }
+
+            try
+            {
+                var asm = Assembly.LoadFrom(dllPath);
+                Type[] types;
+                try { types = asm.GetTypes(); }
+                catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(t => t != null).ToArray(); }
+                allTypes.AddRange(types);
+            }
+            catch { }
+        }
+
+        Type[] typesArr = allTypes.Distinct().ToArray();
+        Type target = typesArr.FirstOrDefault(t => t.FullName == fullTypeName);
+
+        string result;
+        if (target == null)
+        {
+            result = "NOT FOUND.";
+        }
+        else if (kind == "type")
+        {
+            result = TryDecompile(target.Module.FullyQualifiedName, MetadataTokens.EntityHandle(target.MetadataToken));
+        }
+        else
+        {
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+            MethodInfo[] methods = target.GetMethods(flags).Where(m => m.Name == methodName).ToArray();
+            result = methods.Length == 0
+                ? "METHOD NOT FOUND on this type."
+                : string.Join("\n", methods.Select(m => TryDecompile(target.Module.FullyQualifiedName, MetadataTokens.EntityHandle(m.MetadataToken))));
+        }
+
+        File.WriteAllText(outFile, result, Encoding.UTF8);
     }
 
     static readonly Dictionary<string, CSharpDecompiler> _decompilerCache = new();
