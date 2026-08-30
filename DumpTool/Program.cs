@@ -85,22 +85,23 @@ class Program
         }
         Console.WriteLine($"Wrote {typesArr.Length} type names (from all loadable Managed\\*.dll) to all_types.txt");
 
-        // Round 2 targets, informed by round 1's results:
-        // - IBotCreator's only implementor is BotCreatorClass (not BotCreatorClient) - need its
-        //   full shape to replace `new BotCreatorClient(ibotGame, profileCreator, playerFactory)`.
-        // - LocalPlayer.Create takes an `ISession session` param, not IEftSession - almost
-        //   certainly the 4.0.13 name for what this mod calls IEftSession.
-        // - IGetProfileData's implementors are BotProfileDataClass/GClass688/GClass689/
-        //   ProfileDataClass - one of these replaces the missing GetProfileDataParams.
-        // - PoolManagerClass has no LoadBundlesAndCreatePools; it has RegisterPools(PoolsCategory,
-        //   Transform, ObjectsFactoryDataClass, AssemblyType) instead - need ObjectsFactoryDataClass's
-        //   shape to know what that config object requires.
-        // - LocalPlayer.Create also takes IStatisticsManager/IViewFilter - need their implementors.
-        // Everything from round 1 that still came back with zero matches even after scanning
-        // every Managed\*.dll is kept at the end - if it's empty again, those genuinely don't
-        // exist in this client build.
+        // Round 3 targets, informed by round 2's results:
+        // - BotCreatorClass's ctor is (IBotGame, GInterface21 profileCreator, Func<GameWorld,
+        //   Profile, Vector3, Task<LocalPlayer>> playerCreator) - matches this mod's call shape
+        //   exactly except the profileCreator param is GInterface21, not BotProfileClient. Need
+        //   GInterface21's implementors to find what actually goes there.
+        // - ISession (EFT's, not Dissonance's) implements IBackEndSession and looks like the real
+        //   IEftSession replacement. TryGetBackEndSession() calls
+        //   ClientAppUtils.GetMainApp()?.GetClientBackEndSession() - need ClientAppUtils dumped to
+        //   see GetMainApp()'s return type, then that type's GetClientBackEndSession() return type,
+        //   to confirm whether just retyping the local variable to ISession is enough.
+        // - PoolManagerClass.LoadBundlesAndCreatePools exists (method name recovered once the dump
+        //   tool stopped losing methods to unloadable delegate parameter types) but its full
+        //   signature was still hidden behind that same error - re-dumping now that FormatMethod
+        //   formats each parameter independently instead of failing the whole method.
         string[] targets =
         {
+            "GInterface21", "ClientAppUtils",
             "BotCreatorClass", "ISession",
             "BotProfileDataClass", "ProfileDataClass", "GClass688", "GClass689",
             "ObjectsFactoryDataClass", "GClass407",
@@ -248,8 +249,28 @@ class Program
 
     static string FormatMethod(MethodBase m)
     {
-        string ret = m is MethodInfo mi ? mi.ReturnType.ToString() : "";
-        string pars = string.Join(", ", m.GetParameters().Select(p => p.ParameterType + " " + p.Name));
-        return $"{ret} {m.Name}({pars})".Trim();
+        // One unloadable parameter/return type (an unsealed delegate class, e.g. GDelegateNN)
+        // used to fail the whole signature. Format each piece independently so the rest of a
+        // method's real parameters still show up - that was hiding LoadBundlesAndCreatePools'
+        // actual parameter list behind a single bad delegate-typed argument last round.
+        string ret = "";
+        if (m is MethodInfo mi)
+        {
+            try { ret = mi.ReturnType.ToString(); }
+            catch (Exception ex) { ret = "<?:" + ex.GetType().Name + ">"; }
+        }
+
+        ParameterInfo[] parameters;
+        try { parameters = m.GetParameters(); }
+        catch (Exception ex) { return $"{m.Name}(<could not get parameters: {ex.Message}>)"; }
+
+        var parts = new List<string>();
+        foreach (var p in parameters)
+        {
+            try { parts.Add(p.ParameterType + " " + p.Name); }
+            catch (Exception ex) { parts.Add("<?:" + ex.GetType().Name + "> " + (p.Name ?? "?")); }
+        }
+
+        return $"{ret} {m.Name}({string.Join(", ", parts)})".Trim();
     }
 }

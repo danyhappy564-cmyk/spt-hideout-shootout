@@ -243,7 +243,10 @@ namespace HideoutShootout
                     }
                 }
 
-                GetProfileDataParams profileData = new GetProfileDataParams(
+                // PORTING NOTE (SPT 4.0.13): GetProfileDataParams (4.1's name) is BotProfileDataClass
+                // here - same constructor shape (side, role, difficulty, spawnTime, spawnParams,
+                // keepZoneOnSpawn), confirmed against IGetProfileData's implementors.
+                IGetProfileData profileData = new BotProfileDataClass(
                     EPlayerSide.Savage,
                     WildSpawnType.assault,
                     BotDifficulty.normal,
