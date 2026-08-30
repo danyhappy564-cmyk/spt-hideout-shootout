@@ -13,7 +13,9 @@
 		 DLL folder 4.1 mods referenced directly, so SptServerDllDir/HintPath no longer
 		 apply - only the deploy target below still needs an install path. -->
 	<SptRoot Condition="'$(SptRoot)' == ''">E:\SPT 4.0.10</SptRoot>
-	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptRoot)\user\mods\hideoutshootout-server</ServerModDeployDir>
+	<!-- The real install nests the server under an "SPT" subfolder of the game root
+		 (E:\SPT 4.0.10\SPT\user\mods\...), separate from the client's BepInEx\ next to it. -->
+	<ServerModDeployDir Condition="'$(ServerModDeployDir)' == ''">$(SptRoot)\SPT\user\mods\hideoutshootout-server</ServerModDeployDir>
   </PropertyGroup>
 
   <ItemGroup>
