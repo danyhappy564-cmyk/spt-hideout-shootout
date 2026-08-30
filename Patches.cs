@@ -1276,14 +1276,13 @@ namespace HideoutShootout
         }
 
         // PORTING NOTE (SPT 4.0.13): ClientAppUtils doesn't exist under that name anywhere in this
-        // client. Singleton<TarkovApplication> is confirmed NOT instantiated while in the hideout
-        // (per in-game debug log), so that path is a dead end here specifically. HideoutGame's own
-        // factory method (smethod_6) and its LocalPlayer-creation dispatcher (vmethod_3) both take
-        // an ISession parameter directly, confirming the game object DOES carry a session
-        // internally - but no member named "BackEndSession" exists anywhere in its type hierarchy,
-        // so it must be stored under an obfuscated field/property name. Searching by TYPE instead
-        // of by name (TryResolveMemberByTypeDeep, already used elsewhere in this file for the same
-        // kind of problem) finds it regardless of what it's actually called.
+        // client. Singleton<TarkovApplication>.Instantiated was confirmed NOT set while in the
+        // hideout, but TarkovApplication.Exist(out var app) is the real canonical accessor - a
+        // dedicated static helper the game itself uses (confirmed via a sibling mod,
+        // SevenBoldPencil.TargetDummies, that reads app.Session successfully from inside the exact
+        // same hideout/shooting-range context this method runs in). ClientApplication<T>.Session is
+        // a plain property, simpler than GetClientBackEndSession(). The type-search fallback stays
+        // in place in case Exist() itself is ever unavailable.
         /// <summary>
         /// Resolves <see cref="ISession"/>. The session backs profile generation requests from
         /// <see cref="BotsPresets.CreateProfile"/>.
@@ -1292,18 +1291,18 @@ namespace HideoutShootout
         {
             try
             {
-                if (Singleton<TarkovApplication>.Instantiated)
+                if (TarkovApplication.Exist(out TarkovApplication app))
                 {
-                    ISession session = Singleton<TarkovApplication>.Instance.GetClientBackEndSession();
+                    ISession session = app.Session;
                     if (session != null)
                     {
                         return session;
                     }
-                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication>.GetClientBackEndSession() returned null.");
+                    Plugin.LogSource.LogDebug("TryGetBackEndSession: TarkovApplication.Session is null.");
                 }
                 else
                 {
-                    Plugin.LogSource.LogDebug("TryGetBackEndSession: Singleton<TarkovApplication> is not instantiated.");
+                    Plugin.LogSource.LogDebug("TryGetBackEndSession: TarkovApplication.Exist() returned false.");
                 }
 
                 if (Singleton<AbstractGame>.Instantiated
