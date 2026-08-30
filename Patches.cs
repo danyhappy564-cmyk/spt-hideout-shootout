@@ -1380,9 +1380,21 @@ namespace HideoutShootout
                 Plugin.LogSource.LogWarning("PoolManagerClass singleton is unavailable; the Raid pool category could not be registered.");
             }
 
+            IAssetsManager assetsManager = AssetsManagerSingletonClass.Manager;
+            if (assetsManager == null)
+            {
+                Plugin.LogSource.LogWarning("AssetsManagerSingletonClass.Manager is unavailable; bot bundles cannot be preloaded.");
+                return;
+            }
+
+            // PORTING NOTE: IAssetsManager's own parameter name for this call is "resourceKeys",
+            // not "bundleNames" (the concrete class's own name for the same parameter) - a hint
+            // that a raw ResourceKey.path string may not be the format actually expected. Using
+            // IAssetsManager.GetAssetName(ResourceKey), the manager's own provided conversion
+            // function, instead of guessing at ResourceKey's internal field layout directly.
             string[] bundlePaths = profile.GetAllPrefabPaths(true)
                 .Where(key => key != null)
-                .Select(key => key.path)
+                .Select(key => assetsManager.GetAssetName(key))
                 .Where(path => !string.IsNullOrEmpty(path))
                 .Distinct()
                 .ToArray();
@@ -1390,13 +1402,6 @@ namespace HideoutShootout
             if (bundlePaths.Length == 0)
             {
                 Plugin.LogSource.LogWarning($"Profile {profile.Id} reported no prefab bundle paths to preload.");
-                return;
-            }
-
-            IAssetsManager assetsManager = AssetsManagerSingletonClass.Manager;
-            if (assetsManager == null)
-            {
-                Plugin.LogSource.LogWarning("AssetsManagerSingletonClass.Manager is unavailable; bot bundles cannot be preloaded.");
                 return;
             }
 
@@ -1413,11 +1418,23 @@ namespace HideoutShootout
             TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
             Plugin.Instance.StartCoroutine(DriveOperationCoroutine(operation, tcs));
 
-            Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(20)));
-            if (completed != tcs.Task)
+            DateTime waitStart = DateTime.UtcNow;
+            while (true)
             {
-                Plugin.LogSource.LogWarning($"LoadBundlesAsync timed out after 20s for hideout bot profile {profile.Id}; proceeding anyway.");
-                return;
+                Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+                if (completed == tcs.Task)
+                {
+                    break;
+                }
+
+                double elapsed = (DateTime.UtcNow - waitStart).TotalSeconds;
+                Plugin.LogSource.LogInfo($"LoadBundlesAsync still waiting after {elapsed:F0}s for profile {profile.Id}: Completed={operation.Completed} Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
+
+                if (elapsed >= 20)
+                {
+                    Plugin.LogSource.LogWarning($"LoadBundlesAsync timed out after {elapsed:F0}s for hideout bot profile {profile.Id}; proceeding anyway.");
+                    return;
+                }
             }
 
             if (operation.Failed)
@@ -1431,7 +1448,9 @@ namespace HideoutShootout
 
         private static System.Collections.IEnumerator DriveOperationCoroutine(IOperation operation, TaskCompletionSource<bool> tcs)
         {
+            Plugin.LogSource.LogInfo("DriveOperationCoroutine started.");
             yield return operation;
+            Plugin.LogSource.LogInfo($"DriveOperationCoroutine finished: Succeed={operation.Succeed} Failed={operation.Failed} Error={operation.Error}");
             tcs.TrySetResult(operation.Succeed);
         }
 
