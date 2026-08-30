@@ -7,10 +7,17 @@
     <LangVersion>latest</LangVersion>
     <SptRoot Condition="'$(SptRoot)' == ''">E:\SPT 4.0.10</SptRoot>
     <AssemblySearchPaths>$(AssemblySearchPaths);$(SptRoot)\EscapeFromTarkov_Data\Managed</AssemblySearchPaths>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Reflection.Metadata" Version="8.0.0" />
+    <!-- Round 17: only ever pointed at HollywoodFX.dll (a small, non-obfuscated third-party
+         BepInEx plugin) - unlike the round-13 attempt at decompiling the game's own heavily
+         obfuscated assemblies (which crashed with a StackOverflowException even with child-process
+         isolation), a plain compiled mod DLL should decompile without issue. Kept the
+         process-isolation safety net anyway in case a specific method still trips it up. -->
+    <PackageReference Include="ICSharpCode.Decompiler" Version="8.2.0.7535" />
   </ItemGroup>
 
   <ItemGroup>
