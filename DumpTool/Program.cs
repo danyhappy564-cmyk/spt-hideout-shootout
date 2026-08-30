@@ -107,6 +107,14 @@ class Program
         //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
+            // Round 9: two problems surfaced only by actually running the mod in the hideout.
+            // (1) Singleton<TarkovApplication> is confirmed NOT instantiated there (per in-game
+            // debug log), and the AbstractGame.BackEndSession fallback found nothing either -
+            // dumping HideoutGame itself (its real runtime type, unobfuscated per the log) to look
+            // for a session reference directly on the game object.
+            // (2) EFT.Game.Spawning.SpawnSystemFactory doesn't exist - need ISpawnSystem's
+            // implementors and whatever now creates one.
+            "HideoutGame", "ISpawnSystem",
             "LocalPlayerCullingHandlerClass", "GClass917",
             "BasePlayerCulling", "OfflinePlayerCulling",
             "CharacterControllerSpawner",
@@ -167,12 +175,25 @@ class Program
             foreach (var t in typesArr)
                 if (t.Name.IndexOf("Culling", StringComparison.OrdinalIgnoreCase) >= 0)
                     fsw.WriteLine("  " + t.FullName + " (base: " + SafeTypeName(t.BaseType) + ")");
+            fsw.WriteLine();
+
+            string[] spawnSystemNeedles = { "SpawnSystem", "SpawnPointsCollection" };
+            foreach (var needle in spawnSystemNeedles)
+            {
+                fsw.WriteLine("==================================================");
+                fsw.WriteLine("TYPE NAME CONTAINS: " + needle);
+                fsw.WriteLine("==================================================");
+                foreach (var t in typesArr)
+                    if (t.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                        fsw.WriteLine("  " + t.FullName + " (base: " + SafeTypeName(t.BaseType) + ")");
+                fsw.WriteLine();
+            }
         }
         Console.WriteLine("Wrote field_search.txt");
 
         // ClientAppUtils.GetMainApp() has no matching type name anywhere in this client, so find
         // its equivalent by searching every loaded type's static methods by name instead.
-        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession" };
+        string[] methodNameSearches = { "GetMainApp", "MainApp", "GetClientBackEndSession", "BackEndSession", "CreateSpawnSystem", "CreateFromScene" };
         using (var msw = new StreamWriter("method_search.txt", false, Encoding.UTF8))
         {
             foreach (var needle in methodNameSearches)

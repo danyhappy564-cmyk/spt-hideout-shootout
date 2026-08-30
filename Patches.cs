@@ -581,11 +581,12 @@ namespace HideoutShootout
                     {
                         resolved = Singleton<GameWorld>.Instance;
                     }
-                    else if (resolved == null && parameterType.Name.Contains("BotLocationEvents"))
+                    else if (resolved == null && (parameterType.Name.Contains("BotLocationEvents") || parameterType.Name.Contains("EventsDataClass")))
                     {
                         // SPT 4.1: BotsController.Init's last parameter went from
                         // LocationSettingsClass.Location.EventsDataClass to
-                        // JsonType.LocationSettings.Location.BotLocationEvents.
+                        // JsonType.LocationSettings.Location.BotLocationEvents. SPT 4.0.13's client
+                        // confirmed via in-game log to still use EventsDataClass (the older name).
                         resolved = Activator.CreateInstance(parameterType);
                     }
 
