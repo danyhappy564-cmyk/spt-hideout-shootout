@@ -2777,7 +2777,7 @@ namespace HideoutShootout
                 Type targetType = AccessTools.TypeByName(TargetTypeName);
                 if (targetType == null)
                 {
-                    Plugin.LogSource.LogDebug($"Third-party patch type '{TargetTypeName}' not found; HollywoodFX hideout-effects compat skipped (HollywoodFX not installed?).");
+                    Plugin.LogSource.LogInfo($"HollywoodFX hideout-effects compat: type '{TargetTypeName}' not found (HollywoodFX not installed) - skipped.");
                     return;
                 }
 
@@ -2786,9 +2786,20 @@ namespace HideoutShootout
                 _materialRegistryType = AccessTools.TypeByName("HollywoodFX.Lighting.MaterialRegistry");
                 _playerDamageRegistryType = AccessTools.TypeByName("HollywoodFX.Gore.PlayerDamageRegistry");
 
+                // PORTING NOTE: log each lookup individually at Info (not Debug, which BepInEx's
+                // default log level filters out) - a first attempt failed silently in-game with none
+                // of this method's log lines appearing at all, and there was no way to tell which of
+                // the four reflection lookups below came back null on the user's actual installed
+                // HollywoodFX build (which may not exactly match the forked source this was written
+                // against) without asking for another full test round.
                 if (method == null || _isHideoutField == null || _materialRegistryType == null || _playerDamageRegistryType == null)
                 {
-                    Plugin.LogSource.LogDebug("HollywoodFX hideout-effects compat skipped: an expected member was not found (installed HollywoodFX version may not match what this was written against).");
+                    Plugin.LogSource.LogWarning(
+                        $"HollywoodFX hideout-effects compat skipped: method={(method == null ? "MISSING" : "ok")} " +
+                        $"IsHideout field={(_isHideoutField == null ? "MISSING" : "ok")} " +
+                        $"MaterialRegistry type={(_materialRegistryType == null ? "MISSING" : "ok")} " +
+                        $"PlayerDamageRegistry type={(_playerDamageRegistryType == null ? "MISSING" : "ok")} " +
+                        "- installed HollywoodFX version may not match what this was written against.");
                     return;
                 }
 
@@ -2810,6 +2821,7 @@ namespace HideoutShootout
         [PatchPrefix]
         private static bool Prefix()
         {
+            Plugin.LogSource.LogInfo("HollywoodFX hideout-effects compat prefix invoked - forcing IsHideout=false.");
             try
             {
                 _isHideoutField.SetValue(null, false);
