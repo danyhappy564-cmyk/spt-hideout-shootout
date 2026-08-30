@@ -28,6 +28,7 @@ namespace HideoutShootout
             TryEnablePatch("BotOwner_Create_Diagnostics", () => new Patch_BotOwner_Create_Diagnostics().Enable());
             TryEnablePatch("BotCreatorClient_Activate_Diagnostics", () => new Patch_BotCreatorClient_Activate_Diagnostics().Enable());
             TryEnablePatch("AcidphantasmBotPlacement_BossProgressiveRegressivePostfix", () => Patch_AcidphantasmBotPlacement_BossProgressiveRegressivePostfix.TryEnable());
+            TryEnablePatch("HollywoodFX_ForceEffectsInHideout", () => Patch_HollywoodFX_ForceEffectsInHideout.TryEnable());
 
             LogSource.LogInfo("Hideout Weapon Freedom loaded");
         }

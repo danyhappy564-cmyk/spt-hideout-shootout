@@ -2740,4 +2740,102 @@ namespace HideoutShootout
         }
     }
 
+    /// <summary>
+    /// Makes HollywoodFX's blood/impact/decal effects initialize in the Hideout too.
+    /// <para>
+    /// Confirmed from HollywoodFX's own source: <c>HollywoodFX.Patches.GameWorldAwakePrefixPatch
+    /// .Prefix</c> sets a single shared <c>public static bool IsHideout</c> field from
+    /// <c>__instance is HideoutGameWorld</c> every time <c>GameWorld.Awake()</c> fires, then
+    /// returns early - skipping creation of its <c>MaterialRegistry</c>/<c>PlayerDamageRegistry</c>
+    /// singletons - whenever that flag is true. Every other HollywoodFX patch that gates on the
+    /// Hideout (<c>EffectsAwakePrefixPatch</c>, <c>EffectsAwakePostfixPatch</c>,
+    /// <c>GameWorldStartedPostfixPatch</c>, and the shot/impact patches in ShotLifecycle.cs) all
+    /// read that exact same field rather than recomputing anything themselves. Forcing it to false
+    /// here - by replacing this one Prefix outright - is therefore sufficient on its own: every
+    /// downstream check falls through to HollywoodFX's normal (real-raid) behavior unmodified, with
+    /// no need to touch any of those other patches directly. This is a no-op for real raids, where
+    /// the flag was already false.
+    /// </para>
+    /// <para>
+    /// Written entirely through reflection (no compile-time reference to HollywoodFX) so this mod
+    /// neither requires HollywoodFX to be installed nor breaks if it isn't.
+    /// </para>
+    /// </summary>
+    internal class Patch_HollywoodFX_ForceEffectsInHideout : ModulePatch
+    {
+        private const string TargetTypeName = "HollywoodFX.Patches.GameWorldAwakePrefixPatch";
+        private const string TargetMethodName = "Prefix";
+
+        private static FieldInfo _isHideoutField;
+        private static Type _materialRegistryType;
+        private static Type _playerDamageRegistryType;
+
+        public static void TryEnable()
+        {
+            try
+            {
+                Type targetType = AccessTools.TypeByName(TargetTypeName);
+                if (targetType == null)
+                {
+                    Plugin.LogSource.LogDebug($"Third-party patch type '{TargetTypeName}' not found; HollywoodFX hideout-effects compat skipped (HollywoodFX not installed?).");
+                    return;
+                }
+
+                MethodInfo method = AccessTools.Method(targetType, TargetMethodName);
+                _isHideoutField = AccessTools.Field(targetType, "IsHideout");
+                _materialRegistryType = AccessTools.TypeByName("HollywoodFX.Lighting.MaterialRegistry");
+                _playerDamageRegistryType = AccessTools.TypeByName("HollywoodFX.Gore.PlayerDamageRegistry");
+
+                if (method == null || _isHideoutField == null || _materialRegistryType == null || _playerDamageRegistryType == null)
+                {
+                    Plugin.LogSource.LogDebug("HollywoodFX hideout-effects compat skipped: an expected member was not found (installed HollywoodFX version may not match what this was written against).");
+                    return;
+                }
+
+                new Patch_HollywoodFX_ForceEffectsInHideout().Enable();
+                Plugin.LogSource.LogInfo($"Hooked '{TargetTypeName}.{TargetMethodName}' so HollywoodFX's blood/impact effects also initialize in the Hideout.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"Failed to enable HollywoodFX hideout-effects compat: {ex.Message}");
+            }
+        }
+
+        protected override MethodBase GetTargetMethod()
+        {
+            Type targetType = AccessTools.TypeByName(TargetTypeName);
+            return AccessTools.Method(targetType, TargetMethodName);
+        }
+
+        [PatchPrefix]
+        private static bool Prefix()
+        {
+            try
+            {
+                _isHideoutField.SetValue(null, false);
+                CreateSingleton(_materialRegistryType);
+                CreateSingleton(_playerDamageRegistryType);
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"HollywoodFX hideout-effects compat prefix failed: {ex.Message}");
+            }
+
+            // Skip HollywoodFX's own Prefix body entirely - it would just recompute IsHideout from
+            // the real GameWorld instance (undoing the force above) and, for the Hideout, return
+            // before creating the two singletons this replicates.
+            return false;
+        }
+
+        private static void CreateSingleton(Type valueType)
+        {
+            object instance = Activator.CreateInstance(valueType);
+            Type singletonType = typeof(Singleton<>).MakeGenericType(valueType);
+            MethodInfo createMethod = singletonType
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == valueType);
+            createMethod?.Invoke(null, new[] { instance });
+        }
+    }
+
 }
