@@ -1614,10 +1614,10 @@ namespace HideoutShootout
                 // confirmed identical on this client. Confirmed replacements: GClass2265 is a
                 // parameterless, dependency-free IStatisticsManager - the same shape
                 // DumbStatisticsManager had. GClass1855/GClass1856 are the two concrete IViewFilter
-                // implementations with a static Default instance; which one is the "third person"
-                // filter isn't confirmed (both are equally-shaped siblings of abstract GClass1854) -
-                // GClass1855 is a guess, verify visually in-game (bot's body customization should
-                // render normally in third person; if not, try GClass1856.Default instead).
+                // implementations with a static Default instance; confirmed via SPT's own 4.0->4.1
+                // class name mapping table that GClass1856 is ThirdPersonCustomizationFilter
+                // (GClass1855 is the sibling PlayerCustomizationFilter) - was previously a guess of
+                // GClass1855, corrected here.
                 // AppEnvironment.Config.CharacterController.BotPlayerMode's replacement: no existing
                 // preset instance of CharacterControllerSpawner.Mode exists anywhere in this client
                 // (searched every static field/property), so built one directly - it's a plain
@@ -1660,7 +1660,7 @@ namespace HideoutShootout
                         () => 1f,
                         () => 1f,
                         new GClass2265(),
-                        GClass1855.Default,
+                        GClass1856.Default,
                         /*session*/ null,
                         ELocalMode.TRAINING,
                         /*isYourPlayer*/ false,
