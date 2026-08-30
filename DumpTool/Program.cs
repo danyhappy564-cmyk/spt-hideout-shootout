@@ -107,6 +107,7 @@ class Program
         //   searching by field name since those are static fields, not methods.
         string[] targets =
         {
+            "LocalPlayerCullingHandlerClass", "GClass917",
             "BasePlayerCulling", "OfflinePlayerCulling",
             "CharacterControllerSpawner",
             "GClass2265", "GClass2268", "GClass2269", "LocationStatisticsCollectorAbstractClass",
