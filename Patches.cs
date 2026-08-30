@@ -1496,6 +1496,34 @@ namespace HideoutShootout
                 Plugin.LogSource.LogError($"CreateBotLocalPlayerAsync threw: {inner.GetType().Name}: {inner.Message}");
                 // Full trace at Error so it is visible without enabling debug logging.
                 Plugin.LogSource.LogError(inner.ToString());
+
+                // PORTING NOTE (SPT 4.0.13): confirmed in-game - LocalPlayer.Create's async state
+                // machine (LocalPlayer+Struct569.MoveNext, this build's obfuscated name) calls
+                // AsyncTaskMethodBuilder.SetResult twice, throwing this exact InvalidOperationException
+                // on the second call. This is the historical DisableDevMaskCheckPatch-era bug this
+                // mod's own comments already describe (present on 4.0.13's older client where 4.1
+                // apparently no longer needs the workaround). Despite the Task faulting, the
+                // character is actually constructed in the scene (confirmed: the bot visibly spawns,
+                // just never gets its AI/behavior wired up because this exception aborts before a
+                // LocalPlayer reference is returned to the caller). Recover it by identity instead of
+                // treating the fault as a hard failure.
+                if (inner is InvalidOperationException invalidOp
+                    && invalidOp.Message.Contains("final state")
+                    && Singleton<GameWorld>.Instantiated)
+                {
+                    LocalPlayer recovered = Singleton<GameWorld>.Instance.AllAlivePlayersList
+                        .OfType<LocalPlayer>()
+                        .FirstOrDefault(p => p.Profile?.Id == profile.Id);
+
+                    if (recovered != null)
+                    {
+                        LogSpawnDiagnostic($"Recovered LocalPlayer for hideout bot profile {profile.Id} despite SetResult double-completion fault.");
+                        return recovered;
+                    }
+
+                    Plugin.LogSource.LogWarning($"LocalPlayer.Create faulted with the known double-completion bug and no matching player was found in GameWorld for profile {profile.Id}.");
+                }
+
                 throw;
             }
         }
@@ -1515,9 +1543,16 @@ namespace HideoutShootout
                     .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 21);
                 LogPatchOwners("LocalPlayer.Create(21 args)", createMethod);
 
-                Type createStateMachine = typeof(LocalPlayer).GetNestedType("CG_Create", BindingFlags.Public | BindingFlags.NonPublic);
+                // PORTING NOTE (SPT 4.0.13): "CG_Create" was this mod's SPT 4.1 target's name for
+                // LocalPlayer.Create's compiler-generated async state machine. Confirmed via an
+                // actual crash stack trace on this client that it's named Struct569 instead - a
+                // numeric-suffixed obfuscated name that may not be identical on every 4.0.13 client
+                // build. If this comes back "target method not found" on a different install, a
+                // fresh crash trace through CreateBotLocalPlayerAsync will show the real name, the
+                // same way this one was found.
+                Type createStateMachine = typeof(LocalPlayer).GetNestedType("Struct569", BindingFlags.Public | BindingFlags.NonPublic);
                 MethodInfo moveNext = createStateMachine?.GetMethod("MoveNext", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                LogPatchOwners("LocalPlayer+CG_Create.MoveNext", moveNext);
+                LogPatchOwners("LocalPlayer+Struct569.MoveNext", moveNext);
             }
             catch (Exception ex)
             {
